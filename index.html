@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1B4332">
+<title>পল্লী ক্ষুদ্র কৃষি উন্নয়ন ফাউন্ডেশন</title>
+<meta name="description" content="PKKDF কৃষক নিবন্ধন ও পর্যবেক্ষণ ব্যবস্থাপনা — অফলাইন সাপোর্টেড">
+
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon-96.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/5.3.3/css/bootstrap.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ============ SPLASH / LOGIN ============ -->
+<section id="screen-login" class="screen active-screen login-screen">
+  <div class="login-card">
+    <img src="icons/icon-192.png" alt="PKKDF" class="login-logo">
+    <h1 class="org-name">পল্লী ক্ষুদ্র কৃষি<br>উন্নয়ন ফাউন্ডেশন</h1>
+    <p class="org-sub">কৃষক নিবন্ধন ও পর্যবেক্ষণ ব্যবস্থাপনা সিস্টেম</p>
+
+    <form id="loginForm" class="mt-4">
+      <div class="mb-3 text-start">
+        <label class="form-label">NID / মোবাইল নম্বর</label>
+        <input type="text" class="form-control form-control-lg" id="loginId" required inputmode="numeric" autocomplete="username">
+      </div>
+      <div class="mb-3 text-start">
+        <label class="form-label">৪ সংখ্যার পিন</label>
+        <input type="password" class="form-control form-control-lg" id="loginPin" required maxlength="4" inputmode="numeric" autocomplete="current-password">
+      </div>
+      <div id="loginError" class="text-danger small mb-2"></div>
+      <button type="submit" class="btn btn-brand btn-lg w-100">প্রবেশ করুন</button>
+    </form>
+    <p class="small text-muted mt-3 mb-0">ইন্টারনেট ছাড়াও লগইন সংরক্ষিত থাকবে</p>
+  </div>
+</section>
+
+<!-- ============ APP SHELL (after login) ============ -->
+<div id="app-shell" class="d-none">
+
+  <!-- Top bar -->
+  <header class="topbar">
+    <img src="icons/icon-96.png" class="topbar-logo" alt="">
+    <div class="topbar-title">
+      <div class="topbar-org">PKKDF</div>
+      <div class="topbar-page" id="pageTitle">হোম</div>
+    </div>
+    <button class="net-pill" id="netPill" type="button">
+      <span class="dot"></span><span id="netPillText">অনলাইন</span>
+    </button>
+  </header>
+
+  <!-- Sync banner -->
+  <div class="sync-banner d-none" id="syncBanner">
+    <span id="syncBannerText">৩টি ফর্ম সিঙ্কের অপেক্ষায়</span>
+    <button class="btn btn-sm btn-light" id="syncNowBtn">এখনই সিঙ্ক করুন</button>
+  </div>
+
+  <main class="app-main">
+
+    <!-- ---------------- HOME / DASHBOARD ---------------- -->
+    <section id="screen-home" class="screen">
+      <div class="kpi-grid">
+        <div class="kpi-card kpi-green">
+          <div class="kpi-value" id="kpiFarmers">০</div>
+          <div class="kpi-label">মোট কৃষক</div>
+        </div>
+        <div class="kpi-card kpi-blue">
+          <div class="kpi-value" id="kpiLand">০</div>
+          <div class="kpi-label">মোট জমি (একর)</div>
+        </div>
+        <div class="kpi-card kpi-gold">
+          <div class="kpi-value" id="kpiOverdue">০</div>
+          <div class="kpi-label">ডিউ ফলো-আপ</div>
+        </div>
+        <div class="kpi-card kpi-navy">
+          <div class="kpi-value" id="kpiPending">০</div>
+          <div class="kpi-label">সিঙ্ক বাকি</div>
+        </div>
+      </div>
+
+      <div class="section-card">
+        <h2 class="section-heading">ফসল অনুযায়ী বীজ বিতরণ (কেজি)</h2>
+        <canvas id="chartSeed" height="200"></canvas>
+      </div>
+
+      <div class="section-card">
+        <div class="d-flex justify-content-between align-items-center">
+          <h2 class="section-heading mb-0">ডিউ ফলো-আপ কৃষক</h2>
+          <a href="#" class="small-link" data-nav="reports">সব দেখুন</a>
+        </div>
+        <ul class="overdue-list" id="overdueListHome"></ul>
+      </div>
+
+      <div class="quick-actions">
+        <button class="quick-btn" data-nav="register">
+          <span class="qi">📝</span>নতুন কৃষক নিবন্ধন
+        </button>
+        <button class="quick-btn" data-nav="followup-search">
+          <span class="qi">🌱</span>পর্যবেক্ষণ এন্ট্রি
+        </button>
+      </div>
+    </section>
+
+    <!-- ---------------- MODULE 1: FARMER REGISTRATION ---------------- -->
+    <section id="screen-register" class="screen">
+      <form id="farmerForm" class="stack-form">
+
+        <div class="section-card">
+          <h2 class="section-heading">কৃষকের তথ্য</h2>
+          <div class="row g-2">
+            <div class="col-12"><label class="form-label">ফর্ম নম্বর</label>
+              <input class="form-control" id="f_formNo" readonly></div>
+            <div class="col-12"><label class="form-label">জাতীয় পরিচয়পত্র (NID)</label>
+              <input class="form-control" id="f_nid" required inputmode="numeric"></div>
+            <div class="col-12"><label class="form-label">কৃষকের নাম</label>
+              <input class="form-control" id="f_farmerName" required></div>
+            <div class="col-12"><label class="form-label">পিতার নাম</label>
+              <input class="form-control" id="f_fatherName"></div>
+            <div class="col-6"><label class="form-label">মোবাইল</label>
+              <input class="form-control" id="f_mobile" inputmode="tel"></div>
+            <div class="col-6"><label class="form-label">বয়স</label>
+              <input class="form-control" id="f_age" type="number"></div>
+            <div class="col-12"><label class="form-label">লিঙ্গ</label>
+              <select class="form-select" id="f_gender">
+                <option value="পুরুষ">পুরুষ</option>
+                <option value="মহিলা">মহিলা</option>
+                <option value="অন্যান্য">অন্যান্য</option>
+              </select></div>
+          </div>
+        </div>
+
+        <div class="section-card">
+          <h2 class="section-heading">ঠিকানা</h2>
+          <div class="row g-2">
+            <div class="col-6"><label class="form-label">জেলা</label>
+              <select class="form-select loc-select" id="f_district"></select></div>
+            <div class="col-6"><label class="form-label">উপজেলা</label>
+              <select class="form-select loc-select" id="f_upazila"></select></div>
+            <div class="col-6"><label class="form-label">ইউনিয়ন</label>
+              <select class="form-select loc-select" id="f_union"></select></div>
+            <div class="col-6"><label class="form-label">গ্রাম</label>
+              <select class="form-select loc-select" id="f_village"></select></div>
+          </div>
+          <button type="button" class="btn btn-outline-secondary btn-sm mt-2" id="addLocationBtn">+ নতুন লোকেশন যোগ করুন</button>
+        </div>
+
+        <div class="section-card">
+          <h2 class="section-heading">জমি ও ফসল</h2>
+          <div class="row g-2">
+            <div class="col-6"><label class="form-label">জমির পরিমাণ (একর)</label>
+              <input class="form-control" id="f_landSize" type="number" step="0.01" required></div>
+            <div class="col-6"><label class="form-label">বীজের পরিমাণ (কেজি)</label>
+              <input class="form-control" id="f_seedQtyKg" type="number" step="0.01" required></div>
+            <div class="col-12"><label class="form-label">ফসলের নাম</label>
+              <select class="form-select" id="f_cropName"></select></div>
+          </div>
+        </div>
+
+        <div class="section-card">
+          <h2 class="section-heading">লোকেশন ও ছবি</h2>
+          <button type="button" class="btn btn-outline-brand w-100 mb-2" id="gpsBtn">📍 লাইভ GPS নিন</button>
+          <div class="small text-muted mb-2" id="gpsResult">GPS নেওয়া হয়নি</div>
+          <button type="button" class="btn btn-outline-brand w-100 mb-2" id="photoBtn">📷 ছবি তুলুন</button>
+          <input type="file" id="photoInput" accept="image/*" capture="environment" class="d-none">
+          <img id="photoPreview" class="photo-preview d-none">
+        </div>
+
+        <button type="submit" class="btn btn-brand btn-lg w-100 mb-4">নিবন্ধন সংরক্ষণ করুন</button>
+      </form>
+    </section>
+
+    <!-- ---------------- MODULE 2: FOLLOW-UP SEARCH ---------------- -->
+    <section id="screen-followup-search" class="screen">
+      <div class="section-card">
+        <h2 class="section-heading">কৃষক খুঁজুন</h2>
+        <input class="form-control form-control-lg mb-2" id="fuSearchInput" placeholder="ফর্ম নম্বর / NID / নাম দিয়ে খুঁজুন">
+        <ul class="farmer-search-list" id="fuSearchResults"></ul>
+      </div>
+    </section>
+
+    <!-- ---------------- MODULE 2: FOLLOW-UP DETAIL (3-column layout) ---------------- -->
+    <section id="screen-followup" class="screen">
+      <div class="fu-header section-card">
+        <div class="fu-farmer-name" id="fuFarmerName">—</div>
+        <div class="fu-farmer-meta" id="fuFarmerMeta">—</div>
+        <div class="step-tabs" id="stepTabs">
+          <button class="step-tab" data-step="1">ধাপ ১</button>
+          <button class="step-tab" data-step="2">ধাপ ২</button>
+          <button class="step-tab" data-step="3">ধাপ ৩</button>
+          <button class="step-tab" data-step="4">ধাপ ৪</button>
+        </div>
+      </div>
+
+      <form id="stepForm">
+        <div class="fu-3col">
+          <!-- LEFT: Crop info -->
+          <div class="fu-col section-card">
+            <h3 class="fu-col-title">🌾 ফসলের তথ্য</h3>
+            <label class="form-label">পর্যবেক্ষণের তারিখ</label>
+            <input type="date" class="form-control mb-2" id="s_date">
+            <label class="form-label">ফসলের বয়স (দিন)</label>
+            <input type="number" class="form-control mb-2" id="s_cropAge">
+            <label class="form-label">রোগ/পোকার আক্রমণ</label>
+            <input type="text" class="form-control mb-2" id="s_disease">
+            <label class="form-label">প্রতিকার</label>
+            <input type="text" class="form-control mb-2" id="s_remedy">
+            <label class="form-label">অবস্থা (স্কেল ১০০%)</label>
+            <input type="range" class="form-range" id="s_rating" min="0" max="100" value="70">
+            <div class="text-center small text-muted"><span id="s_ratingVal">৭০</span>%</div>
+          </div>
+
+          <!-- MIDDLE: Photo + location -->
+          <div class="fu-col section-card">
+            <h3 class="fu-col-title">📍 ছবি ও লোকেশন</h3>
+            <button type="button" class="btn btn-outline-brand w-100 mb-2" id="s_gpsBtn">লাইভ GPS নিন</button>
+            <div class="small text-muted mb-2" id="s_gpsResult">GPS নেওয়া হয়নি</div>
+            <div class="small text-muted mb-2" id="s_distance">অফিস থেকে দূরত্ব: —</div>
+            <button type="button" class="btn btn-outline-brand w-100 mb-2" id="s_photoBtn">ছবি তুলুন</button>
+            <input type="file" id="s_photoInput" accept="image/*" capture="environment" class="d-none">
+            <div class="photo-with-caption">
+              <img id="s_photoPreview" class="photo-preview d-none">
+              <div class="photo-caption" id="s_photoCaption"></div>
+            </div>
+          </div>
+
+          <!-- RIGHT: Expense tracker -->
+          <div class="fu-col section-card">
+            <h3 class="fu-col-title">৳ খরচের হিসাব</h3>
+            <label class="form-label">জমি প্রস্তুতি</label>
+            <input type="number" class="form-control mb-2 exp-input" id="e_landPrep" value="0">
+            <label class="form-label">নিড়ানি</label>
+            <input type="number" class="form-control mb-2 exp-input" id="e_weeding" value="0">
+            <label class="form-label">সার</label>
+            <input type="number" class="form-control mb-2 exp-input" id="e_fertilizer" value="0">
+            <label class="form-label">কীটনাশক</label>
+            <input type="number" class="form-control mb-2 exp-input" id="e_pesticide" value="0">
+            <label class="form-label">সেচ</label>
+            <input type="number" class="form-control mb-2 exp-input" id="e_irrigation" value="0">
+            <label class="form-label">শ্রমিক</label>
+            <input type="number" class="form-control mb-2 exp-input" id="e_labor" value="0">
+            <div class="expense-total">মোট খরচ: <span id="e_total">৳ ০</span></div>
+          </div>
+        </div>
+
+        <!-- Step 4 only: yield & profit -->
+        <div class="section-card d-none" id="step4Extra">
+          <h2 class="section-heading">লাভ-ক্ষতি হিসাব</h2>
+          <div class="row g-2">
+            <div class="col-6"><label class="form-label">উৎপাদন (কেজি)</label>
+              <input class="form-control" id="p_yield" type="number"></div>
+            <div class="col-6"><label class="form-label">বাজার দর (৳/কেজি)</label>
+              <input class="form-control" id="p_price" type="number"></div>
+          </div>
+          <div class="profit-box" id="profitBox">লাভ/ক্ষতি: ৳ ০</div>
+        </div>
+
+        <button type="submit" class="btn btn-brand btn-lg w-100 mb-3">এই ধাপ সংরক্ষণ করুন</button>
+      </form>
+
+      <button class="btn btn-outline-brand w-100 mb-4" id="printProfileBtn">🖨️ প্রোফাইল প্রিন্ট / PDF</button>
+    </section>
+
+    <!-- ---------------- MODULE 3: REPORTS ---------------- -->
+    <section id="screen-reports" class="screen">
+      <div class="section-card">
+        <h2 class="section-heading">অফিসার পারফরম্যান্স (লাভ অনুযায়ী)</h2>
+        <canvas id="chartOfficer" height="220"></canvas>
+      </div>
+      <div class="section-card">
+        <h2 class="section-heading">ফসল অনুযায়ী কৃষক সংখ্যা</h2>
+        <canvas id="chartCrop" height="220"></canvas>
+      </div>
+      <div class="section-card">
+        <h2 class="section-heading">ডিউ ফলো-আপ (২০ দিনের বেশি)</h2>
+        <ul class="overdue-list" id="overdueListReports"></ul>
+      </div>
+      <div class="section-card">
+        <h2 class="section-heading">NID দিয়ে কৃষকের ইতিহাস খুঁজুন</h2>
+        <input class="form-control mb-2" id="historyNidInput" placeholder="NID নম্বর দিন" inputmode="numeric">
+        <div id="historyResults"></div>
+      </div>
+    </section>
+
+    <!-- ---------------- MODULE 4: GIS MAP ---------------- -->
+    <section id="screen-map" class="screen">
+      <div id="gisMap"></div>
+    </section>
+
+    <!-- ---------------- ADMIN PANEL (admin / super_admin only) ---------------- -->
+    <section id="screen-admin" class="screen">
+      <div class="section-card">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <h2 class="section-heading mb-0">কর্মী তালিকা</h2>
+          <span class="small-link" id="myRoleLabel"></span>
+        </div>
+        <button type="button" class="btn btn-outline-brand btn-sm mb-2" id="addOfficerBtn">+ নতুন কর্মী যোগ করুন</button>
+        <ul class="farmer-search-list" id="officerList"></ul>
+      </div>
+
+      <div class="section-card">
+        <h2 class="section-heading">আপনার এলাকার কৃষক তালিকা</h2>
+        <input class="form-control mb-2" id="adminFarmerSearch" placeholder="নাম / ফর্ম নম্বর দিয়ে খুঁজুন">
+        <ul class="farmer-search-list" id="adminFarmerList"></ul>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Bottom nav -->
+  <nav class="bottom-nav">
+    <button class="nav-btn active" data-nav="home"><span class="ni">🏠</span><span>হোম</span></button>
+    <button class="nav-btn" data-nav="register"><span class="ni">📝</span><span>নিবন্ধন</span></button>
+    <button class="nav-btn" data-nav="followup-search"><span class="ni">🌱</span><span>পর্যবেক্ষণ</span></button>
+    <button class="nav-btn" data-nav="reports"><span class="ni">📊</span><span>রিপোর্ট</span></button>
+    <button class="nav-btn" data-nav="map"><span class="ni">🗺️</span><span>ম্যাপ</span></button>
+    <button class="nav-btn d-none" id="adminNavBtn" data-nav="admin"><span class="ni">🛡️</span><span>অ্যাডমিন</span></button>
+  </nav>
+</div>
+
+<!-- ============ PRINT AREA (populated by JS, only visible on print) ============ -->
+<div id="printArea"></div>
+
+<div class="toast-host" id="toastHost"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/5.3.3/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

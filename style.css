@@ -1,0 +1,248 @@
+/* ==========================================================
+   PKKDF — Design tokens
+   Palette drawn from the org seal: forest green wreath, sky-blue
+   band, deep navy base, golden flower.
+   ========================================================== */
+:root{
+  --green-900:#0F3D23;
+  --green-700:#1B6B3C;
+  --green-500:#2E9E52;
+  --green-100:#E6F4EA;
+  --sky:#3FB6E8;
+  --navy:#16213E;
+  --navy-800:#101A30;
+  --gold:#EFA512;
+  --gold-100:#FEF3DD;
+  --danger:#D64545;
+  --bg:#F5F8F6;
+  --card:#FFFFFF;
+  --text:#16211C;
+  --muted:#66766C;
+  --border:#E3EAE5;
+  --radius:16px;
+  --shadow:0 2px 10px rgba(15,61,35,.08);
+}
+
+*{box-sizing:border-box;}
+html,body{height:100%;}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--text);
+  font-family:'Hind Siliguri', 'Noto Sans Bengali', system-ui, sans-serif;
+  -webkit-tap-highlight-color:transparent;
+  overscroll-behavior-y:contain;
+}
+h1,h2,h3{font-family:'Hind Siliguri', sans-serif; font-weight:700; margin:0;}
+button{font-family:inherit;}
+.form-label{font-weight:600; color:var(--navy); font-size:.9rem; margin-bottom:4px;}
+.form-control,.form-select{
+  border-radius:10px; border:1.5px solid var(--border); padding:.65rem .8rem; font-size:1rem;
+}
+.form-control:focus,.form-select:focus{
+  border-color:var(--green-500); box-shadow:0 0 0 3px rgba(46,158,82,.15);
+}
+
+/* ---------- Buttons ---------- */
+.btn-brand{
+  background:linear-gradient(135deg,var(--green-700),var(--green-500));
+  color:#fff; border:none; border-radius:12px; font-weight:700; padding:.85rem 1rem;
+}
+.btn-brand:active{transform:scale(.98);}
+.btn-outline-brand{
+  background:#fff; color:var(--green-700); border:1.5px solid var(--green-500);
+  border-radius:12px; font-weight:600; padding:.7rem 1rem;
+}
+
+/* ==========================================================
+   LOGIN SCREEN
+   ========================================================== */
+.screen{display:none;}
+.screen.active-screen{display:block;}
+
+.login-screen{
+  min-height:100vh;
+  display:flex; align-items:center; justify-content:center;
+  background:radial-gradient(circle at 50% -10%, var(--green-100), var(--bg) 60%);
+  padding:24px;
+}
+.login-card{
+  width:100%; max-width:380px; text-align:center;
+  background:var(--card); border-radius:20px; padding:32px 24px;
+  box-shadow:0 10px 30px rgba(16,26,48,.10);
+}
+.login-logo{width:96px; height:96px; margin-bottom:14px;}
+.org-name{color:var(--navy); font-size:1.3rem; line-height:1.35;}
+.org-sub{color:var(--muted); margin-top:6px; font-size:.92rem;}
+
+/* ==========================================================
+   APP SHELL
+   ========================================================== */
+#app-shell{min-height:100vh; display:flex; flex-direction:column;}
+
+.topbar{
+  position:sticky; top:0; z-index:20;
+  display:flex; align-items:center; gap:10px;
+  background:var(--navy); color:#fff;
+  padding:10px 14px; padding-top:calc(10px + env(safe-area-inset-top));
+}
+.topbar-logo{width:34px; height:34px; border-radius:50%; background:#fff; padding:2px;}
+.topbar-title{flex:1;}
+.topbar-org{font-size:.68rem; letter-spacing:.04em; opacity:.75;}
+.topbar-page{font-size:1.02rem; font-weight:700;}
+.net-pill{
+  display:flex; align-items:center; gap:6px;
+  background:rgba(255,255,255,.12); border:none; color:#fff;
+  border-radius:999px; padding:6px 10px; font-size:.78rem;
+}
+.net-pill .dot{width:8px; height:8px; border-radius:50%; background:#4ADE80;}
+.net-pill.offline .dot{background:#F87171;}
+
+.sync-banner{
+  background:var(--gold-100); color:#7A4E00; font-size:.85rem;
+  display:flex; align-items:center; justify-content:space-between; gap:10px;
+  padding:8px 14px;
+}
+
+.app-main{flex:1; padding:14px 14px 90px; max-width:900px; margin:0 auto; width:100%;}
+
+/* ---------- Bottom nav ---------- */
+.bottom-nav{
+  position:fixed; left:0; right:0; bottom:0; z-index:20;
+  display:flex; background:#fff; border-top:1px solid var(--border);
+  padding-bottom:env(safe-area-inset-bottom);
+}
+.nav-btn{
+  flex:1; border:none; background:none; padding:8px 2px 6px;
+  display:flex; flex-direction:column; align-items:center; gap:2px;
+  color:var(--muted); font-size:.68rem; font-weight:600;
+}
+.nav-btn .ni{font-size:1.25rem; line-height:1;}
+.nav-btn.active{color:var(--green-700);}
+
+/* ==========================================================
+   CARDS / KPI
+   ========================================================== */
+.section-card{
+  background:var(--card); border-radius:var(--radius); box-shadow:var(--shadow);
+  padding:16px; margin-bottom:14px;
+}
+.section-heading{font-size:1.02rem; color:var(--navy); margin-bottom:10px;}
+
+.kpi-grid{display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:14px;}
+.kpi-card{border-radius:16px; padding:14px; color:#fff;}
+.kpi-value{font-size:1.6rem; font-weight:800; line-height:1;}
+.kpi-label{font-size:.78rem; opacity:.9; margin-top:6px;}
+.kpi-green{background:linear-gradient(135deg,var(--green-700),var(--green-500));}
+.kpi-blue{background:linear-gradient(135deg,#1D6E96,var(--sky));}
+.kpi-gold{background:linear-gradient(135deg,#B9790A,var(--gold));}
+.kpi-navy{background:linear-gradient(135deg,var(--navy-800),var(--navy));}
+
+.quick-actions{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
+.quick-btn{
+  border:1.5px dashed var(--green-500); background:var(--green-100); color:var(--green-900);
+  border-radius:14px; padding:16px 8px; font-weight:700; font-size:.85rem;
+  display:flex; flex-direction:column; align-items:center; gap:6px;
+}
+.quick-btn .qi{font-size:1.5rem;}
+
+.small-link{font-size:.82rem; color:var(--green-700); text-decoration:none; font-weight:600;}
+
+.overdue-list{list-style:none; margin:0; padding:0;}
+.overdue-list li{
+  display:flex; justify-content:space-between; align-items:center;
+  padding:10px 0; border-bottom:1px solid var(--border); font-size:.9rem;
+}
+.overdue-list li:last-child{border-bottom:none;}
+.overdue-badge{
+  background:#FCE8E8; color:var(--danger); font-weight:700; font-size:.76rem;
+  padding:3px 9px; border-radius:999px; white-space:nowrap;
+}
+.overdue-empty{color:var(--muted); font-size:.88rem; text-align:center; padding:10px 0;}
+
+/* ---------- Registration form ---------- */
+.photo-preview{width:100%; max-height:220px; object-fit:cover; border-radius:12px; margin-top:8px;}
+
+.farmer-search-list{list-style:none; margin:0; padding:0;}
+.farmer-search-list li{
+  padding:12px 10px; border-radius:10px; border:1px solid var(--border);
+  margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;
+}
+.farmer-search-list li button{
+  background:var(--green-500); color:#fff; border:none; border-radius:8px; padding:6px 12px; font-size:.82rem; font-weight:700;
+}
+
+/* ---------- Follow-up (3 column) ---------- */
+.fu-farmer-name{font-size:1.1rem; font-weight:700; color:var(--navy);}
+.fu-farmer-meta{font-size:.85rem; color:var(--muted); margin-bottom:10px;}
+.step-tabs{display:flex; gap:6px;}
+.step-tab{
+  flex:1; border:1.5px solid var(--border); background:#fff; border-radius:10px;
+  padding:8px 4px; font-size:.82rem; font-weight:700; color:var(--muted);
+}
+.step-tab.done{border-color:var(--green-500); color:var(--green-700); background:var(--green-100);}
+.step-tab.active{background:var(--green-700); border-color:var(--green-700); color:#fff;}
+.step-tab.locked{opacity:.45;}
+
+.fu-3col{display:grid; grid-template-columns:1fr; gap:0;}
+.fu-col-title{font-size:.92rem; color:var(--navy); margin-bottom:10px;}
+.photo-with-caption{position:relative;}
+.photo-caption{
+  font-size:.78rem; color:var(--muted); margin-top:4px; text-align:center;
+}
+.expense-total{
+  margin-top:6px; font-weight:800; color:var(--navy); text-align:right;
+  border-top:1px dashed var(--border); padding-top:8px;
+}
+.profit-box{
+  margin-top:10px; text-align:center; font-size:1.15rem; font-weight:800;
+  padding:12px; border-radius:12px; background:var(--green-100); color:var(--green-900);
+}
+.profit-box.loss{background:#FCE8E8; color:var(--danger);}
+
+@media (min-width:760px){
+  .fu-3col{grid-template-columns:1fr 1fr 1fr; gap:14px;}
+  .fu-col{margin-bottom:0;}
+}
+
+/* ---------- Map ---------- */
+#gisMap{height:calc(100vh - 220px); min-height:420px; border-radius:var(--radius); overflow:hidden; box-shadow:var(--shadow);}
+.leaflet-popup-content{font-family:'Hind Siliguri', sans-serif;}
+
+/* ---------- Toasts ---------- */
+.toast-host{position:fixed; top:calc(14px + env(safe-area-inset-top)); left:50%; transform:translateX(-50%); z-index:999; display:flex; flex-direction:column; gap:8px; width:min(92vw,380px);}
+.app-toast{
+  background:var(--navy); color:#fff; padding:10px 16px; border-radius:10px; font-size:.88rem;
+  box-shadow:0 6px 18px rgba(0,0,0,.2); text-align:center; animation:toastIn .18s ease-out;
+}
+.app-toast.error{background:var(--danger);}
+.app-toast.success{background:var(--green-700);}
+@keyframes toastIn{from{opacity:0; transform:translateY(-8px)} to{opacity:1; transform:translateY(0)}}
+
+/* ==========================================================
+   PRINT — Farmer profile, exactly 2 A4 pages
+   ========================================================== */
+#printArea{display:none;}
+
+@media print{
+  body *{visibility:hidden;}
+  #printArea, #printArea *{visibility:visible;}
+  #printArea{
+    display:block; position:absolute; top:0; left:0; width:100%;
+    font-family:'Hind Siliguri', sans-serif; color:#000;
+  }
+  .print-page{width:210mm; min-height:297mm; padding:14mm; page-break-after:always;}
+  .print-page:last-child{page-break-after:auto;}
+  .print-head{display:flex; align-items:center; gap:12px; border-bottom:3px solid #1B6B3C; padding-bottom:10px; margin-bottom:14px;}
+  .print-head img{width:52px; height:52px;}
+  .print-head h1{font-size:16px; margin:0;}
+  .print-head p{font-size:11px; margin:0; color:#444;}
+  .print-grid{display:grid; grid-template-columns:1fr 1fr; gap:6px 18px; font-size:12px; margin-bottom:14px;}
+  .print-grid div span{font-weight:700;}
+  .print-section-title{font-size:13px; font-weight:700; background:#E6F4EA; padding:5px 8px; margin:10px 0 6px;}
+  .print-steps{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
+  .print-step-card{border:1px solid #ccc; border-radius:6px; padding:8px; font-size:11px;}
+  .print-step-card img{width:100%; height:90px; object-fit:cover; border-radius:4px; margin-bottom:6px;}
+  .print-fin{font-size:12px; margin-top:10px;}
+  .print-fin .big{font-size:16px; font-weight:800;}
+}
