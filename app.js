@@ -8,7 +8,7 @@
 const CONFIG = {
   // Paste your deployed Google Apps Script Web App URL here.
   // See DEPLOYMENT_GUIDE.md — must end in /exec
-  API_BASE: '   https://script.google.com/macros/s/AKfycbyGf9YTI9kQ7JTz_yO_qR4StF49zy1EUqm1JPQ3hzIJ_I3S_Qtk4v_r-SILj6CEs7k/exec',
+  API_BASE: 'https://script.google.com/macros/s/PASTE_YOUR_DEPLOYMENT_ID/exec',
   OFFICE_LAT: 23.8103,   // used to compute "distance from office" — set to your office
   OFFICE_LNG: 90.4125,
   OVERDUE_DAYS: 20
@@ -151,11 +151,25 @@ function isAdmin() { return CURRENT_USER && (CURRENT_USER.role === 'admin' || CU
 async function bootApp() {
   updateNetPill();
   await refreshMasterDataCache();
+  // Pull farmer records from the server BEFORE the first paint, so a
+  // fresh device/browser doesn't show "0" until you happen to revisit
+  // the screen. Safe to skip if offline — local cache (if any) is used.
+  await refreshFarmersCache();
   await renderLocationDropdowns();
   await renderCropDropdown();
   navigateTo('home');
   updateSyncBanner();
   if (isOnline()) syncQueue();
+}
+
+async function refreshFarmersCache() {
+  if (!isOnline()) return;
+  try {
+    const res = await apiGet('farmers', { requesterId: requesterId() });
+    if (res.farmers) {
+      for (const f of res.farmers) await idbPut('farmers', f);
+    }
+  } catch (e) { /* offline or server hiccup — local cache still used */ }
 }
 
 /* ================================================================
@@ -728,9 +742,31 @@ async function renderDashboard() {
     // Best-effort background refresh from server (doesn't block UI).
     // requesterId lets the server return only what this role is scoped to see.
     apiGet('farmers', { requesterId: requesterId() }).then(res => {
-      if (res.farmers) res.farmers.forEach(f => idbPut('farmers', f));
+      if (res.farmers) {
+        Promise.all(res.farmers.map(f => idbPut('farmers', f))).then(() => {
+          // Re-render if the user is still looking at the home screen,
+          // so newly-synced counts/charts show up without a manual nav.
+          if (document.getElementById('screen-home').classList.contains('active-screen')) {
+            renderDashboardNumbersOnly();
+          }
+        });
+      }
     }).catch(() => {});
   }
+}
+
+// Lightweight re-render used after a background refresh — avoids
+// re-triggering another network call (renderDashboard() would loop).
+async function renderDashboardNumbersOnly() {
+  const farmers = await idbGetAll('farmers');
+  document.getElementById('kpiFarmers').textContent = toBnNum(farmers.length);
+  document.getElementById('kpiLand').textContent = toBnNum(farmers.reduce((s, f) => s + (Number(f.landSize) || 0), 0).toFixed(1));
+  const overdue = computeOverdue(farmers);
+  document.getElementById('kpiOverdue').textContent = toBnNum(overdue.length);
+  renderOverdueList('overdueListHome', overdue.slice(0, 5));
+  const seedByCrop = {};
+  farmers.forEach(f => { const c = f.cropName || 'অজানা'; seedByCrop[c] = (seedByCrop[c] || 0) + (Number(f.seedQtyKg) || 0); });
+  drawBarChart('chartSeed', Object.keys(seedByCrop), Object.values(seedByCrop), '#2E9E52');
 }
 
 function computeOverdue(farmers) {
@@ -753,6 +789,7 @@ function renderOverdueList(elId, list) {
 }
 
 async function renderReports() {
+  await refreshFarmersCache(); // keep report numbers current when other officers have synced since boot
   const farmers = await idbGetAll('farmers');
   const profitByOfficer = {};
   const countByCrop = {};
@@ -852,7 +889,7 @@ async function renderAdmin() {
     }
   }
 
-  const farmers = await idbGetAll('farmers'); // already scoped, cached from last online fetch
+  const farmers = await idbGetAll('farmers'); // already scoped, refreshed at boot / reports visit
   renderAdminFarmerList(farmers);
   document.getElementById('adminFarmerSearch').oninput = debounce(function () {
     const q = this.value.trim().toLowerCase();

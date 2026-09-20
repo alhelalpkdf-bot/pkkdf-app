@@ -9,7 +9,7 @@
      via IndexedDB, not by this service worker.
    ================================================================ */
 
-const CACHE_NAME = 'pkkdf-shell-v2';
+const CACHE_NAME = 'pkkdf-shell-v4';
 const APP_SHELL = [
   './',
   './index.html',
