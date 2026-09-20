@@ -9,8 +9,8 @@ const CONFIG = {
   // Paste your deployed Google Apps Script Web App URL here.
   // See DEPLOYMENT_GUIDE.md — must end in /exec
   API_BASE: 'https://script.google.com/macros/s/AKfycbyGf9YTI9kQ7JTz_yO_qR4StF49zy1EUqm1JPQ3hzIJ_I3S_Qtk4v_r-SILj6CEs7k/exec',
-  OFFICE_LAT: 23.8103,   // used to compute "distance from office" — set to your office
-  OFFICE_LNG: 90.4125,
+  OFFICE_LAT: 24.423061,   // used to compute "distance from office" — set to your office
+  OFFICE_LNG: 89.002831,
   OVERDUE_DAYS: 20
 };
 
