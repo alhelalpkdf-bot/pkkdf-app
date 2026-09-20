@@ -62,10 +62,14 @@ button{font-family:inherit;}
 
 .login-screen{
   min-height:100vh;
-  display:flex; align-items:center; justify-content:center;
   background:radial-gradient(circle at 50% -10%, var(--green-100), var(--bg) 60%);
   padding:24px;
 }
+/* Higher specificity than the generic .screen / .screen.active-screen rules above,
+   so the login screen only becomes a flex layout while it is the active screen —
+   otherwise "display:flex" here was beating "display:none" and the login card
+   stayed visible underneath the dashboard after logging in. */
+.screen.active-screen.login-screen{ display:flex; align-items:center; justify-content:center; }
 .login-card{
   width:100%; max-width:380px; text-align:center;
   background:var(--card); border-radius:20px; padding:32px 24px;
@@ -171,6 +175,8 @@ button{font-family:inherit;}
 .farmer-search-list li button{
   background:var(--green-500); color:#fff; border:none; border-radius:8px; padding:6px 12px; font-size:.82rem; font-weight:700;
 }
+.admin-row-actions{display:flex; gap:6px; flex-shrink:0;}
+.admin-row-actions .btn-reset-pin{background:var(--sky);}
 
 /* ---------- Follow-up (3 column) ---------- */
 .fu-farmer-name{font-size:1.1rem; font-weight:700; color:var(--navy);}

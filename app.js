@@ -8,7 +8,7 @@
 const CONFIG = {
   // Paste your deployed Google Apps Script Web App URL here.
   // See DEPLOYMENT_GUIDE.md — must end in /exec
-  API_BASE: 'https://script.google.com/macros/s/AKfycbyGf9YTI9kQ7JTz_yO_qR4StF49zy1EUqm1JPQ3hzIJ_I3S_Qtk4v_r-SILj6CEs7k/exec',
+  API_BASE: 'https://script.google.com/macros/s/PASTE_YOUR_DEPLOYMENT_ID/exec',
   OFFICE_LAT: 23.8103,   // used to compute "distance from office" — set to your office
   OFFICE_LNG: 90.4125,
   OVERDUE_DAYS: 20
@@ -842,7 +842,10 @@ async function renderAdmin() {
         <li>
           <div><strong>${escapeHtml(emp.name || '')}</strong> <span class="small text-muted">(${escapeHtml(emp.role || 'officer')})</span><br>
           <span class="small text-muted">${escapeHtml(emp.officeName || '')} • ${escapeHtml(emp.region || '')} • ${emp.active === false ? 'নিষ্ক্রিয়' : 'সক্রিয়'}</span></div>
-          <button data-toggle-officer="${escapeHtml(emp.id)}" data-active="${emp.active !== false}">${emp.active === false ? 'সক্রিয় করুন' : 'নিষ্ক্রিয় করুন'}</button>
+          <div class="admin-row-actions">
+            <button data-toggle-officer="${escapeHtml(emp.id)}" data-active="${emp.active !== false}">${emp.active === false ? 'সক্রিয় করুন' : 'নিষ্ক্রিয় করুন'}</button>
+            <button data-reset-pin="${escapeHtml(emp.id)}" class="btn-reset-pin">পিন রিসেট</button>
+          </div>
         </li>`).join('') || '<li class="text-muted small">কোনো কর্মী পাওয়া যায়নি</li>';
     } catch (e) {
       document.getElementById('officerList').innerHTML = '<li class="text-muted small">লোড করা যায়নি</li>';
@@ -895,15 +898,31 @@ document.getElementById('addOfficerBtn').addEventListener('click', async () => {
 });
 
 document.getElementById('officerList').addEventListener('click', async (e) => {
-  const btn = e.target.closest('[data-toggle-officer]');
-  if (!btn) return;
-  const id = btn.getAttribute('data-toggle-officer');
-  const nowActive = btn.getAttribute('data-active') === 'true';
-  try {
-    await apiPost('updateOfficer', { requesterId: requesterId(), id, active: !nowActive });
-    toast('আপডেট করা হয়েছে', 'success');
-    renderAdmin();
-  } catch (e2) { toast('আপডেট করা যায়নি', 'error'); }
+  const toggleBtn = e.target.closest('[data-toggle-officer]');
+  const resetBtn = e.target.closest('[data-reset-pin]');
+
+  if (toggleBtn) {
+    const id = toggleBtn.getAttribute('data-toggle-officer');
+    const nowActive = toggleBtn.getAttribute('data-active') === 'true';
+    try {
+      await apiPost('updateOfficer', { requesterId: requesterId(), id, active: !nowActive });
+      toast('আপডেট করা হয়েছে', 'success');
+      renderAdmin();
+    } catch (e2) { toast('আপডেট করা যায়নি', 'error'); }
+    return;
+  }
+
+  if (resetBtn) {
+    const id = resetBtn.getAttribute('data-reset-pin');
+    const newPin = prompt('নতুন ৪ সংখ্যার পিন লিখুন:');
+    if (!newPin) return;
+    if (!/^\d{4}$/.test(newPin)) { toast('পিন অবশ্যই ৪ সংখ্যার হতে হবে', 'error'); return; }
+    if (!isOnline()) { toast('পিন রিসেট করতে ইন্টারনেট প্রয়োজন', 'error'); return; }
+    try {
+      await apiPost('updateOfficer', { requesterId: requesterId(), id, pin: newPin });
+      toast('নতুন পিন সেট করা হয়েছে — কর্মীকে জানিয়ে দিন', 'success');
+    } catch (e2) { toast('পিন রিসেট করা যায়নি', 'error'); }
+  }
 });
 
 document.getElementById('adminFarmerList').addEventListener('click', async (e) => {
