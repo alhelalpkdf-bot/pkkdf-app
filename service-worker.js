@@ -9,7 +9,7 @@
      via IndexedDB, not by this service worker.
    ================================================================ */
 
-const CACHE_NAME = 'pkkdf-shell-v4';
+const CACHE_NAME = 'pkkdf-shell-v5';
 const APP_SHELL = [
   './',
   './index.html',
@@ -23,8 +23,7 @@ const APP_SHELL = [
   'https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/5.3.3/css/bootstrap.min.css',
   'https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/5.3.3/js/bootstrap.bundle.min.js',
   'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css',
-  'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js',
-  'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js'
+  'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js'
 ];
 
 self.addEventListener('install', (event) => {

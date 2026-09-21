@@ -8,9 +8,9 @@
 const CONFIG = {
   // Paste your deployed Google Apps Script Web App URL here.
   // See DEPLOYMENT_GUIDE.md — must end in /exec
-  API_BASE: 'https://script.google.com/macros/s/AKfycbyGf9YTI9kQ7JTz_yO_qR4StF49zy1EUqm1JPQ3hzIJ_I3S_Qtk4v_r-SILj6CEs7k/exec',
-  OFFICE_LAT: 24.423061,   // used to compute "distance from office" — set to your office
-  OFFICE_LNG: 89.002831,
+  API_BASE: 'https://script.google.com/macros/s/PASTE_YOUR_DEPLOYMENT_ID/exec',
+  OFFICE_LAT: 23.8103,   // used to compute "distance from office" — set to your office
+  OFFICE_LNG: 90.4125,
   OVERDUE_DAYS: 20
 };
 
@@ -817,18 +817,66 @@ async function renderReports() {
 }
 
 function drawBarChart(canvasId, labels, values, color) {
-  const ctx = document.getElementById(canvasId);
-  if (!ctx) return;
-  if (ctx._chart) ctx._chart.destroy();
-  ctx._chart = new Chart(ctx, {
-    type: 'bar',
-    data: { labels, datasets: [{ data: values, backgroundColor: color, borderRadius: 6 }] },
-    options: {
-      plugins: { legend: { display: false } },
-      scales: { y: { beginAtZero: true } },
-      responsive: true
-    }
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const cssWidth = (canvas.parentElement && canvas.parentElement.clientWidth) || canvas.clientWidth || 300;
+  const cssHeight = Number(canvas.getAttribute('height')) || 200;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = cssWidth * dpr;
+  canvas.height = cssHeight * dpr;
+  canvas.style.width = cssWidth + 'px';
+  canvas.style.height = cssHeight + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssWidth, cssHeight);
+  ctx.textAlign = 'center';
+  ctx.font = "11px 'Hind Siliguri', sans-serif";
+
+  if (!labels.length || values.every(v => !v)) {
+    ctx.fillStyle = '#9AA5A0';
+    ctx.font = "13px 'Hind Siliguri', sans-serif";
+    ctx.fillText('কোনো তথ্য নেই', cssWidth / 2, cssHeight / 2);
+    return;
+  }
+
+  const padding = { top: 24, right: 10, bottom: 30, left: 10 };
+  const chartW = cssWidth - padding.left - padding.right;
+  const chartH = cssHeight - padding.top - padding.bottom;
+  const maxVal = Math.max(...values, 1);
+  const n = labels.length;
+  const gap = 10;
+  const barW = Math.max(14, (chartW - gap * (n - 1)) / n);
+
+  labels.forEach((label, i) => {
+    const x = padding.left + i * (barW + gap);
+    const val = values[i] || 0;
+    const barH = Math.max(2, (val / maxVal) * chartH);
+    const y = padding.top + (chartH - barH);
+
+    ctx.fillStyle = color;
+    roundRectPath_(ctx, x, y, barW, barH, Math.min(5, barW / 2, barH));
+    ctx.fill();
+
+    ctx.fillStyle = '#16211C';
+    ctx.fillText(toBnNum(Math.round(val)), x + barW / 2, Math.max(12, y - 6));
+
+    ctx.fillStyle = '#66766C';
+    const shortLabel = label.length > 8 ? label.slice(0, 7) + '…' : label;
+    ctx.fillText(shortLabel, x + barW / 2, padding.top + chartH + 16);
   });
+}
+
+function roundRectPath_(ctx, x, y, w, h, r) {
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.arcTo(x + w, y, x + w, y + r, r);
+  ctx.lineTo(x + w, y + h);
+  ctx.lineTo(x, y + h);
+  ctx.lineTo(x, y + r);
+  ctx.arcTo(x, y, x + r, y, r);
+  ctx.closePath();
 }
 
 /* ================================================================
