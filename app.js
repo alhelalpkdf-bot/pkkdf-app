@@ -8,9 +8,9 @@
 const CONFIG = {
   // Paste your deployed Google Apps Script Web App URL here.
   // See DEPLOYMENT_GUIDE.md — must end in /exec
-  API_BASE: 'https://script.google.com/macros/s/AKfycbyGf9YTI9kQ7JTz_yO_qR4StF49zy1EUqm1JPQ3hzIJ_I3S_Qtk4v_r-SILj6CEs7k/exec',
-  OFFICE_LAT: 24.423061,   // used to compute "distance from office" — set to your office
-  OFFICE_LNG: 89.002831,
+  API_BASE: 'https://script.google.com/macros/s/PASTE_YOUR_DEPLOYMENT_ID/exec',
+  OFFICE_LAT: 23.8103,   // used to compute "distance from office" — set to your office
+  OFFICE_LNG: 90.4125,
   OVERDUE_DAYS: 20
 };
 
@@ -820,7 +820,11 @@ function drawBarChart(canvasId, labels, values, color) {
   const canvas = document.getElementById(canvasId);
   if (!canvas) return;
   const cssWidth = (canvas.parentElement && canvas.parentElement.clientWidth) || canvas.clientWidth || 300;
-  const cssHeight = Number(canvas.getAttribute('height')) || 200;
+  // Fixed CSS height per chart — NOT read from canvas.getAttribute('height'),
+  // because we overwrite that same attribute below with the device-scaled
+  // pixel size; reading it back on a later redraw would compound the size
+  // larger every time (the bug that made charts grow huge on refresh).
+  const cssHeight = CHART_HEIGHTS[canvasId] || 200;
   const dpr = window.devicePixelRatio || 1;
   canvas.width = cssWidth * dpr;
   canvas.height = cssHeight * dpr;
@@ -865,6 +869,7 @@ function drawBarChart(canvasId, labels, values, color) {
     ctx.fillText(shortLabel, x + barW / 2, padding.top + chartH + 16);
   });
 }
+const CHART_HEIGHTS = { chartSeed: 200, chartOfficer: 220, chartCrop: 220 };
 
 function roundRectPath_(ctx, x, y, w, h, r) {
   r = Math.max(0, Math.min(r, w / 2, h / 2));
