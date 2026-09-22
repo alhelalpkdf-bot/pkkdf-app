@@ -156,13 +156,32 @@
 
         <div class="section-card">
           <h2 class="section-heading">জমি ও ফসল</h2>
+          <label class="form-label">জমির পরিমাণ</label>
           <div class="row g-2">
-            <div class="col-6"><label class="form-label">জমির পরিমাণ (একর)</label>
-              <input class="form-control" id="f_landSize" type="number" step="0.01" required></div>
-            <div class="col-6"><label class="form-label">বীজের পরিমাণ (কেজি)</label>
-              <input class="form-control" id="f_seedQtyKg" type="number" step="0.01" required></div>
+            <div class="col-4"><input class="form-control" id="f_landBigha" type="number" step="0.01" placeholder="বিঘা"></div>
+            <div class="col-4"><input class="form-control" id="f_landShotangsho" type="number" step="0.01" placeholder="শতাংশ"></div>
+            <div class="col-4"><input class="form-control" id="f_landKatha" type="number" step="0.01" placeholder="কাঠা"></div>
+          </div>
+          <div class="small text-muted mt-1 mb-2">মোট: <span id="f_landTotal">০</span> বিঘা</div>
+          <div class="row g-2">
             <div class="col-12"><label class="form-label">ফসলের নাম</label>
               <select class="form-select" id="f_cropName"></select></div>
+            <div class="col-6"><label class="form-label">মাটির ধরন</label>
+              <select class="form-select" id="f_soilType">
+                <option value="">-- নির্বাচন করুন --</option>
+                <option value="বেলে">বেলে</option>
+                <option value="দোআঁশ">দোআঁশ</option>
+                <option value="এঁটেল">এঁটেল</option>
+                <option value="বেলে দোআঁশ">বেলে দোআঁশ</option>
+                <option value="এঁটেল দোআঁশ">এঁটেল দোআঁশ</option>
+              </select></div>
+            <div class="col-6"><label class="form-label">মৌসুম</label>
+              <select class="form-select" id="f_season">
+                <option value="">-- নির্বাচন করুন --</option>
+                <option value="রবি">রবি</option>
+                <option value="খরিপ-১">খরিপ-১</option>
+                <option value="খরিপ-২">খরিপ-২</option>
+              </select></div>
           </div>
         </div>
 
@@ -191,8 +210,13 @@
     <!-- ---------------- MODULE 2: FOLLOW-UP DETAIL (3-column layout) ---------------- -->
     <section id="screen-followup" class="screen">
       <div class="fu-header section-card">
-        <div class="fu-farmer-name" id="fuFarmerName">—</div>
-        <div class="fu-farmer-meta" id="fuFarmerMeta">—</div>
+        <div class="fu-header-top">
+          <div>
+            <div class="fu-farmer-name" id="fuFarmerName">—</div>
+            <div class="fu-farmer-meta" id="fuFarmerMeta">—</div>
+          </div>
+          <img id="fuFarmerPhoto" class="fu-farmer-photo d-none" alt="">
+        </div>
         <div class="step-tabs" id="stepTabs">
           <button class="step-tab" data-step="1">ধাপ ১</button>
           <button class="step-tab" data-step="2">ধাপ ২</button>
@@ -298,6 +322,23 @@
 
     <!-- ---------------- ADMIN PANEL (admin / super_admin only) ---------------- -->
     <section id="screen-admin" class="screen">
+      <div class="section-card">
+        <h2 class="section-heading">অনুমোদনের অপেক্ষায় থাকা আবেদন</h2>
+        <ul class="farmer-search-list" id="pendingApprovalList"></ul>
+      </div>
+
+      <div class="section-card">
+        <h2 class="section-heading">অনুমোদিত কৃষক ও বীজ বিতরণ</h2>
+        <ul class="farmer-search-list" id="approvedFarmerList"></ul>
+      </div>
+
+      <div class="section-card">
+        <h2 class="section-heading">মাসভিত্তিক সারাংশ (শাখা অফিস অনুযায়ী)</h2>
+        <div class="table-scroll">
+          <table class="mis-table" id="monthlySummaryTable"></table>
+        </div>
+      </div>
+
       <div class="section-card">
         <div class="d-flex justify-content-between align-items-center mb-2">
           <h2 class="section-heading mb-0">কর্মী তালিকা</h2>

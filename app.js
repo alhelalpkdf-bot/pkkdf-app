@@ -8,9 +8,12 @@
 const CONFIG = {
   // Paste your deployed Google Apps Script Web App URL here.
   // See DEPLOYMENT_GUIDE.md — must end in /exec
-  API_BASE: 'https://script.google.com/macros/s/AKfycbyGf9YTI9kQ7JTz_yO_qR4StF49zy1EUqm1JPQ3hzIJ_I3S_Qtk4v_r-SILj6CEs7k/exec',
-  OFFICE_LAT: 23.8103,   // used to compute "distance from office" — set to your office
-  OFFICE_LNG: 90.4125,
+  API_BASE: 'https://script.google.com/macros/s/PASTE_YOUR_DEPLOYMENT_ID/exec',
+  // Used only if a farmer's own branch office (see Offices sheet) can't
+  // be found — should rarely trigger once every officer's officeName
+  // matches an Offices sheet row.
+  FALLBACK_OFFICE_LAT: 23.8103,
+  FALLBACK_OFFICE_LNG: 90.4125,
   OVERDUE_DAYS: 20
 };
 
@@ -275,7 +278,16 @@ async function refreshMasterDataCache() {
 }
 async function getMasterData() {
   const cached = await idbGet('masterData', 'data');
-  return cached ? cached.value : { locations: [], crops: [], employees: [] };
+  return cached ? cached.value : { locations: [], crops: [], employees: [], offices: [] };
+}
+
+// Finds a branch office's GPS by name (falls back to CONFIG default if
+// the office isn't in the Offices sheet, or has no coordinates yet).
+async function getOfficeCoords(officeName) {
+  const data = await getMasterData();
+  const off = (data.offices || []).find(o => o.officeName === officeName);
+  if (off && off.lat && off.lng) return { lat: Number(off.lat), lng: Number(off.lng) };
+  return { lat: CONFIG.FALLBACK_OFFICE_LAT, lng: CONFIG.FALLBACK_OFFICE_LNG };
 }
 
 async function renderLocationDropdowns() {
@@ -350,6 +362,18 @@ function prepFarmerForm() {
   capturedGps = null; capturedPhotoBase64 = null;
   document.getElementById('gpsResult').textContent = 'GPS নেওয়া হয়নি';
   document.getElementById('photoPreview').classList.add('d-none');
+  document.getElementById('f_landTotal').textContent = '০';
+}
+
+['f_landBigha', 'f_landShotangsho', 'f_landKatha'].forEach(id => {
+  document.getElementById(id).addEventListener('input', updateLandTotal);
+});
+function updateLandTotal() {
+  const bigha = Number(document.getElementById('f_landBigha').value) || 0;
+  const shotangsho = Number(document.getElementById('f_landShotangsho').value) || 0;
+  const katha = Number(document.getElementById('f_landKatha').value) || 0;
+  const total = bigha + (shotangsho / 33) + (katha / 20);
+  document.getElementById('f_landTotal').textContent = toBnNum(total.toFixed(2));
 }
 
 document.getElementById('gpsBtn').addEventListener('click', () => captureGps('gpsResult', (pos) => { capturedGps = pos; }));
@@ -417,9 +441,12 @@ document.getElementById('farmerForm').addEventListener('submit', async (e) => {
     upazila: document.getElementById('f_upazila').value,
     union: document.getElementById('f_union').value,
     village: document.getElementById('f_village').value,
-    landSize: document.getElementById('f_landSize').value,
-    seedQtyKg: document.getElementById('f_seedQtyKg').value,
+    landBigha: document.getElementById('f_landBigha').value,
+    landShotangsho: document.getElementById('f_landShotangsho').value,
+    landKatha: document.getElementById('f_landKatha').value,
     cropName: document.getElementById('f_cropName').value,
+    soilType: document.getElementById('f_soilType').value,
+    season: document.getElementById('f_season').value,
     gpsLat: capturedGps ? capturedGps.lat : '',
     gpsLng: capturedGps ? capturedGps.lng : '',
     regPhotoBase64: capturedPhotoBase64 || '',
@@ -431,9 +458,13 @@ document.getElementById('farmerForm').addEventListener('submit', async (e) => {
   };
 
   // Save locally immediately (source of truth for offline use)
+  const totalBigha = (Number(record.landBigha) || 0) + (Number(record.landShotangsho) || 0) / 33 + (Number(record.landKatha) || 0) / 20;
   const localRecord = Object.assign({}, record, {
     regPhotoUrl: record.regPhotoBase64, // local preview until synced
-    status: 'নিবন্ধিত', step1Json: '', step2Json: '', step3Json: '', step4Json: '',
+    landSize: Math.round(totalBigha * 100) / 100,
+    status: 'নিবন্ধিত', // application only — approval (and seed kg) comes later from admin
+    approvedSeedKg: '', approvedDate: '', approvedBy: '',
+    step1Json: '', step2Json: '', step3Json: '', step4Json: '',
     totalExpense: 0, profitLoss: 0, _pendingSync: true
   });
   delete localRecord.regPhotoBase64;
@@ -472,16 +503,30 @@ async function runFarmerSearch() {
   const list = document.getElementById('fuSearchResults');
   if (!q) { list.innerHTML = ''; return; }
   const farmers = await idbGetAll('farmers');
-  const results = farmers.filter(f =>
+  const matches = farmers.filter(f =>
     (f.formNo || '').toLowerCase().includes(q) ||
     (f.nid || '').toLowerCase().includes(q) ||
     (f.farmerName || '').toLowerCase().includes(q)
-  ).slice(0, 20);
+  );
+
+  // Relevance: a name/form/NID that STARTS WITH the query ranks above
+  // one that merely contains it somewhere in the middle.
+  const rank = (f) => {
+    const name = (f.farmerName || '').toLowerCase();
+    if (name.startsWith(q)) return 0;
+    if ((f.formNo || '').toLowerCase().startsWith(q) || (f.nid || '').toLowerCase().startsWith(q)) return 1;
+    if (name.includes(q)) return 2;
+    return 3;
+  };
+  const results = matches.sort((a, b) => rank(a) - rank(b) || (a.farmerName || '').localeCompare(b.farmerName || '')).slice(0, 20);
 
   list.innerHTML = results.length ? results.map(f => `
     <li>
-      <div><strong>${escapeHtml(f.farmerName)}</strong><br>
-      <span class="small text-muted">ফর্ম: ${escapeHtml(f.formNo)} • ${escapeHtml(f.status || '')}</span></div>
+      <div class="farmer-row-left">
+        <img class="farmer-thumb" src="${escapeHtml(f.regPhotoUrl || '')}" onerror="this.style.visibility='hidden'">
+        <div><strong>${escapeHtml(f.farmerName)}</strong><br>
+        <span class="small text-muted">ফর্ম: ${escapeHtml(f.formNo)} • ${escapeHtml(f.status || '')}</span></div>
+      </div>
       <button data-open-followup="${escapeHtml(f.formNo)}">খুলুন</button>
     </li>`).join('') : '<li class="text-muted small">কোনো কৃষক পাওয়া যায়নি</li>';
 }
@@ -497,10 +542,17 @@ let ACTIVE_STEP = 1;
 async function openFollowUp(formNo) {
   const farmer = await idbGet('farmers', formNo);
   if (!farmer) return;
+  if (farmer.status === 'নিবন্ধিত') {
+    toast('এই কৃষকের আবেদন এখনও অনুমোদিত হয়নি — অ্যাডমিন অনুমোদন করলে পর্যবেক্ষণ শুরু করা যাবে', 'error');
+    return;
+  }
   ACTIVE_FARMER = farmer;
   document.getElementById('fuFarmerName').textContent = farmer.farmerName;
   document.getElementById('fuFarmerMeta').textContent =
     'ফর্ম: ' + farmer.formNo + ' • ' + farmer.cropName + ' • ' + farmer.village;
+  const photoEl = document.getElementById('fuFarmerPhoto');
+  if (farmer.regPhotoUrl) { photoEl.src = farmer.regPhotoUrl; photoEl.classList.remove('d-none'); }
+  else { photoEl.classList.add('d-none'); }
   renderStepTabs();
   const firstOpenStep = [1, 2, 3, 4].find(s => !farmer['step' + s + 'Json']) || 4;
   selectStep(firstOpenStep);
@@ -565,9 +617,10 @@ document.getElementById('s_rating').addEventListener('input', function () {
 });
 
 let stepGps = null, stepPhotoBase64 = null;
-document.getElementById('s_gpsBtn').addEventListener('click', () => captureGps('s_gpsResult', (pos) => {
+document.getElementById('s_gpsBtn').addEventListener('click', () => captureGps('s_gpsResult', async (pos) => {
   stepGps = pos;
-  const distKm = haversineKm(Number(pos.lat), Number(pos.lng), CONFIG.OFFICE_LAT, CONFIG.OFFICE_LNG);
+  const office = await getOfficeCoords(ACTIVE_FARMER ? ACTIVE_FARMER.officeName : '');
+  const distKm = haversineKm(Number(pos.lat), Number(pos.lng), office.lat, office.lng);
   document.getElementById('s_distance').textContent = 'অফিস থেকে দূরত্ব: ' + toBnNum(distKm.toFixed(1)) + ' কিমি';
 }));
 document.getElementById('s_photoBtn').addEventListener('click', () => document.getElementById('s_photoInput').click());
@@ -616,7 +669,11 @@ document.getElementById('stepForm').addEventListener('submit', async (e) => {
     disease: document.getElementById('s_disease').value,
     remedy: document.getElementById('s_remedy').value,
     rating: document.getElementById('s_rating').value,
-    gps: stepGps, expense, expense_total: expenseTotal
+    gps: stepGps, expense, expense_total: expenseTotal,
+    // Kept locally so the print profile can show a step photo even
+    // before this step has synced and the server has returned a
+    // permanent Drive link (data.photoUrl, merged in by the server).
+    photo: stepPhotoBase64 || null
   };
   if (ACTIVE_STEP === 4) {
     data.yieldQty = Number(document.getElementById('p_yield').value) || 0;
@@ -639,6 +696,8 @@ document.getElementById('stepForm').addEventListener('submit', async (e) => {
     ACTIVE_FARMER.marketPrice = data.marketPrice;
     ACTIVE_FARMER.profitLoss = (data.yieldQty * data.marketPrice) - ACTIVE_FARMER.totalExpense;
     ACTIVE_FARMER.status = 'সম্পন্ন';
+  } else {
+    ACTIVE_FARMER.status = 'ধাপ ' + ACTIVE_STEP + ' সম্পন্ন';
   }
   await idbPut('farmers', ACTIVE_FARMER);
 
@@ -665,6 +724,10 @@ function buildPrintArea(f) {
   const steps = [1, 2, 3, 4].map(s => {
     try { return JSON.parse(f['step' + s + 'Json'] || '{}'); } catch (e) { return {}; }
   });
+  const totalExpense = numOr0_(f.totalExpense);
+  const yieldQty = numOr0_(f.yieldQty);
+  const marketPrice = numOr0_(f.marketPrice);
+  const profitLoss = numOr0_(f.profitLoss);
   const html = `
     <div class="print-page">
       <div class="print-head">
@@ -678,10 +741,11 @@ function buildPrintArea(f) {
         <div><span>NID:</span> ${esc(f.nid)}</div>
         <div><span>মোবাইল:</span> ${esc(f.mobile)}</div>
         <div><span>ঠিকানা:</span> ${esc(f.village)}, ${esc(f.union)}, ${esc(f.upazila)}, ${esc(f.district)}</div>
-        <div><span>জমির পরিমাণ:</span> ${esc(f.landSize)} একর</div>
+        <div><span>জমির পরিমাণ:</span> ${esc(f.landBigha || 0)} বিঘা ${esc(f.landShotangsho || 0)} শতাংশ ${esc(f.landKatha || 0)} কাঠা (মোট ${esc(f.landSize || 0)} বিঘা)</div>
         <div><span>ফসল:</span> ${esc(f.cropName)}</div>
-        <div><span>বীজ:</span> ${esc(f.seedQtyKg)} কেজি</div>
-        <div><span>দায়িত্বরত অফিসার:</span> ${esc(f.officerName)}</div>
+        <div><span>মাটির ধরন / মৌসুম:</span> ${esc(f.soilType || '-')} / ${esc(f.season || '-')}</div>
+        <div><span>অনুমোদিত বীজ:</span> ${esc(f.approvedSeedKg || 0)} কেজি</div>
+        <div><span>দায়িত্বরত অফিসার:</span> ${esc(f.officerName)} (${esc(f.officeName || '')})</div>
         <div><span>নিবন্ধনের তারিখ:</span> ${esc(f.regDate ? formatBnDate(f.regDate.slice(0,10)) : '')}</div>
       </div>
       <div class="print-section-title">পর্যবেক্ষণ ধাপসমূহ (১ ও ২)</div>
@@ -698,26 +762,47 @@ function buildPrintArea(f) {
       </div>
       <div class="print-section-title">আর্থিক সারসংক্ষেপ</div>
       <div class="print-fin">
-        <div>মোট খরচ: ৳ ${esc(f.totalExpense || 0)}</div>
-        <div>উৎপাদন: ${esc(f.yieldQty || 0)} কেজি × বাজার দর ৳${esc(f.marketPrice || 0)}</div>
-        <div class="big">${(Number(f.profitLoss) || 0) >= 0 ? 'লাভ' : 'ক্ষতি'}: ৳ ${esc(Math.abs(Number(f.profitLoss) || 0))}</div>
+        <div>মোট খরচ (৪ ধাপ মিলিয়ে): ৳ ${esc(totalExpense)}</div>
+        <div>উৎপাদন: ${esc(yieldQty)} কেজি × বাজার দর ৳${esc(marketPrice)}/কেজি</div>
+        <div class="big">${profitLoss >= 0 ? 'লাভ' : 'ক্ষতি'}: ৳ ${esc(Math.abs(profitLoss))}</div>
+      </div>
+      <div class="print-signatures">
+        <div>সহকারী মাঠকর্মকর্তা</div>
+        <div>পরিদর্শক</div>
+        <div>মাঠ কর্মকর্তা</div>
       </div>
     </div>
   `;
   document.getElementById('printArea').innerHTML = html;
 }
+
 function printStepCard(d, n) {
   if (!d || !d.date) return `<div class="print-step-card"><strong>ধাপ ${n}</strong><br><span style="color:#999">তথ্য নেই</span></div>`;
+  const photo = d.photoUrl || d.photo;
+  const exp = d.expense || {};
+  const expLines = [
+    ['জমি প্রস্তুতি', exp.landPrep], ['নিড়ানি', exp.weeding], ['সার', exp.fertilizer],
+    ['কীটনাশক', exp.pesticide], ['সেচ', exp.irrigation], ['শ্রমিক', exp.labor]
+  ].filter(([, v]) => numOr0_(v) > 0).map(([label, v]) => `${label}: ৳${esc(numOr0_(v))}`).join(', ');
   return `<div class="print-step-card">
+    ${photo ? `<img src="${esc(photo)}">` : ''}
     <strong>ধাপ ${n} — ${esc(formatBnDate(d.date))}</strong><br>
     ফসলের বয়স: ${esc(d.cropAge || '-')} দিন<br>
     রোগ/পোকা: ${esc(d.disease || '-')}<br>
     প্রতিকার: ${esc(d.remedy || '-')}<br>
     অবস্থা: ${esc(d.rating || '-')}%<br>
-    খরচ: ৳ ${esc(d.expense_total || 0)}
+    ${expLines ? `খরচের বিবরণ: ${expLines}<br>` : ''}
+    মোট খরচ: ৳ ${esc(numOr0_(d.expense_total))}
   </div>`;
 }
 function esc(v) { return escapeHtml(String(v == null ? '' : v)); }
+// Defensive numeric coercion for anything printed — a legacy bad cell
+// value (e.g. a stray spreadsheet error) will show as ০ instead of
+// repeating the error text (this was the "৳ #NUM!" bug).
+function numOr0_(v) {
+  const n = Number(v);
+  return isFinite(n) ? n : 0;
+}
 
 /* ================================================================
    MODULE 3 — DASHBOARD + REPORTS
@@ -734,7 +819,7 @@ async function renderDashboard() {
   renderOverdueList('overdueListHome', overdue.slice(0, 5));
 
   const seedByCrop = {};
-  farmers.forEach(f => { const c = f.cropName || 'অজানা'; seedByCrop[c] = (seedByCrop[c] || 0) + (Number(f.seedQtyKg) || 0); });
+  farmers.forEach(f => { const c = f.cropName || 'অজানা'; seedByCrop[c] = (seedByCrop[c] || 0) + (Number(f.approvedSeedKg) || 0); });
   drawBarChart('chartSeed', Object.keys(seedByCrop), Object.values(seedByCrop), '#2E9E52');
 
   await updateSyncBanner();
@@ -765,14 +850,14 @@ async function renderDashboardNumbersOnly() {
   document.getElementById('kpiOverdue').textContent = toBnNum(overdue.length);
   renderOverdueList('overdueListHome', overdue.slice(0, 5));
   const seedByCrop = {};
-  farmers.forEach(f => { const c = f.cropName || 'অজানা'; seedByCrop[c] = (seedByCrop[c] || 0) + (Number(f.seedQtyKg) || 0); });
+  farmers.forEach(f => { const c = f.cropName || 'অজানা'; seedByCrop[c] = (seedByCrop[c] || 0) + (Number(f.approvedSeedKg) || 0); });
   drawBarChart('chartSeed', Object.keys(seedByCrop), Object.values(seedByCrop), '#2E9E52');
 }
 
 function computeOverdue(farmers) {
   const now = new Date();
-  return farmers.filter(f => f.status !== 'সম্পন্ন').map(f => {
-    const ref = f.lastFollowUpDate || f.regDate;
+  return farmers.filter(f => f.status !== 'সম্পন্ন' && f.status !== 'নিবন্ধিত').map(f => {
+    const ref = f.lastFollowUpDate || f.approvedDate || f.regDate;
     if (!ref) return null;
     const days = Math.floor((now - new Date(ref)) / 86400000);
     return days > CONFIG.OVERDUE_DAYS ? { formNo: f.formNo, farmerName: f.farmerName, officerName: f.officerName, village: f.village, daysSince: days } : null;
@@ -891,9 +976,14 @@ let leafletMap = null;
 async function renderMap() {
   const farmers = await idbGetAll('farmers');
   const withGps = farmers.filter(f => f.gpsLat && f.gpsLng);
+  const data = await getMasterData();
+  const offices = data.offices || [];
+
+  const centerLat = offices.length ? Number(offices[0].lat) : CONFIG.FALLBACK_OFFICE_LAT;
+  const centerLng = offices.length ? Number(offices[0].lng) : CONFIG.FALLBACK_OFFICE_LNG;
 
   if (!leafletMap) {
-    leafletMap = L.map('gisMap').setView([CONFIG.OFFICE_LAT, CONFIG.OFFICE_LNG], 11);
+    leafletMap = L.map('gisMap').setView([centerLat, centerLng], 9);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; OpenStreetMap contributors', maxZoom: 19
     }).addTo(leafletMap);
@@ -901,16 +991,23 @@ async function renderMap() {
     leafletMap.eachLayer(l => { if (l instanceof L.Marker) leafletMap.removeLayer(l); });
   }
 
-  L.marker([CONFIG.OFFICE_LAT, CONFIG.OFFICE_LNG], {
-    icon: L.divIcon({ className: '', html: '📍', iconSize: [26, 26] })
-  }).addTo(leafletMap).bindPopup('<strong>PKKDF অফিস</strong>');
+  // Every branch office gets its own pin at its own GPS location.
+  offices.forEach(o => {
+    if (!o.lat || !o.lng) return;
+    L.marker([Number(o.lat), Number(o.lng)], {
+      icon: L.divIcon({ className: '', html: '🏢', iconSize: [26, 26] })
+    }).addTo(leafletMap).bindPopup('<strong>' + escapeHtml(o.officeName) + '</strong><br>শাখা অফিস');
+  });
 
   withGps.forEach(f => {
-    const dist = haversineKm(Number(f.gpsLat), Number(f.gpsLng), CONFIG.OFFICE_LAT, CONFIG.OFFICE_LNG);
+    const office = offices.find(o => o.officeName === f.officeName);
+    const officeLat = office ? Number(office.lat) : CONFIG.FALLBACK_OFFICE_LAT;
+    const officeLng = office ? Number(office.lng) : CONFIG.FALLBACK_OFFICE_LNG;
+    const dist = haversineKm(Number(f.gpsLat), Number(f.gpsLng), officeLat, officeLng);
     L.marker([Number(f.gpsLat), Number(f.gpsLng)], {
       icon: L.divIcon({ className: '', html: '📌', iconSize: [22, 22] })
     }).addTo(leafletMap).bindPopup(
-      `<strong>${escapeHtml(f.farmerName)}</strong><br>অফিসার: ${escapeHtml(f.officerName || '-')}<br>ফসলের ধাপ: ${escapeHtml(f.status || '-')}<br>দূরত্ব: ${dist.toFixed(1)} কিমি`
+      `<strong>${escapeHtml(f.farmerName)}</strong><br>অফিসার: ${escapeHtml(f.officerName || '-')}<br>শাখা: ${escapeHtml(f.officeName || '-')}<br>ফসলের ধাপ: ${escapeHtml(f.status || '-')}<br>দূরত্ব: ${dist.toFixed(1)} কিমি`
     );
   });
 }
@@ -921,6 +1018,12 @@ async function renderMap() {
 async function renderAdmin() {
   document.getElementById('myRoleLabel').textContent =
     CURRENT_USER.role === 'super_admin' ? 'সুপার অ্যাডমিন' : 'অ্যাডমিন — ' + (CURRENT_USER.region || '');
+
+  const farmers = await idbGetAll('farmers'); // already scoped, refreshed at boot / reports visit
+
+  renderPendingApprovals(farmers);
+  renderApprovedFarmers(farmers);
+  renderMonthlySummary(farmers);
 
   if (!isOnline()) {
     document.getElementById('officerList').innerHTML = '<li class="text-muted small">কর্মী তালিকা দেখতে ইন্টারনেট প্রয়োজন</li>';
@@ -942,7 +1045,6 @@ async function renderAdmin() {
     }
   }
 
-  const farmers = await idbGetAll('farmers'); // already scoped, refreshed at boot / reports visit
   renderAdminFarmerList(farmers);
   document.getElementById('adminFarmerSearch').oninput = debounce(function () {
     const q = this.value.trim().toLowerCase();
@@ -950,6 +1052,106 @@ async function renderAdmin() {
       (f.farmerName || '').toLowerCase().includes(q) || (f.formNo || '').toLowerCase().includes(q));
     renderAdminFarmerList(filtered);
   }, 200);
+}
+
+function renderPendingApprovals(farmers) {
+  const pending = farmers.filter(f => f.status === 'নিবন্ধিত');
+  const el = document.getElementById('pendingApprovalList');
+  el.innerHTML = pending.length ? pending.map(f => `
+    <li>
+      <div class="farmer-row-left">
+        <img class="farmer-thumb" src="${escapeHtml(f.regPhotoUrl || '')}" onerror="this.style.visibility='hidden'">
+        <div><strong>${escapeHtml(f.farmerName)}</strong><br>
+        <span class="small text-muted">ফর্ম: ${escapeHtml(f.formNo)} • ${escapeHtml(f.cropName || '')} • ${escapeHtml(f.officeName || '')}</span></div>
+      </div>
+      <button data-approve="${escapeHtml(f.formNo)}" class="btn-approve">অনুমোদন করুন</button>
+    </li>`).join('') : '<li class="overdue-empty">অনুমোদনের অপেক্ষায় কেউ নেই</li>';
+}
+
+document.getElementById('pendingApprovalList').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-approve]');
+  if (!btn) return;
+  const formNo = btn.getAttribute('data-approve');
+  const seedKg = prompt('কত কেজি বীজ দেওয়া হচ্ছে?');
+  if (seedKg === null) return;
+  if (!seedKg || isNaN(Number(seedKg))) { toast('বীজের পরিমাণ সংখ্যায় লিখুন', 'error'); return; }
+  const payload = { requesterId: requesterId(), formNo, seedKg: Number(seedKg), deviceId: getDeviceId() };
+  if (isOnline()) {
+    try {
+      await apiPost('approveFarmer', payload);
+      toast('কৃষক অনুমোদিত হয়েছে', 'success');
+    } catch (err) {
+      await queueAction('approveFarmer', payload);
+      toast('সংরক্ষিত, ইন্টারনেট এলে সিঙ্ক হবে', 'success');
+    }
+  } else {
+    await queueAction('approveFarmer', payload);
+    toast('অফলাইনে সংরক্ষিত হয়েছে', 'success');
+  }
+  const farmer = await idbGet('farmers', formNo);
+  if (farmer) {
+    farmer.status = 'অনুমোদিত'; farmer.approvedSeedKg = Number(seedKg);
+    farmer.approvedDate = new Date().toISOString(); farmer.approvedBy = CURRENT_USER.name;
+    await idbPut('farmers', farmer);
+  }
+  renderAdmin();
+});
+
+function renderApprovedFarmers(farmers) {
+  const approved = farmers.filter(f => f.status && f.status !== 'নিবন্ধিত');
+  const el = document.getElementById('approvedFarmerList');
+  el.innerHTML = approved.length ? approved.slice(0, 100).map(f => `
+    <li>
+      <div><strong>${escapeHtml(f.farmerName)}</strong><br>
+      <span class="small text-muted">${escapeHtml(f.officeName || '')} • ${escapeHtml(f.status || '')} • অনুমোদনের তারিখ: ${esc_(f.approvedDate ? formatBnDate(f.approvedDate.slice(0,10)) : '-')}</span></div>
+      <span class="overdue-badge" style="background:var(--green-100); color:var(--green-700);">${toBnNum(f.approvedSeedKg || 0)} কেজি</span>
+    </li>`).join('') : '<li class="overdue-empty">এখনও কোনো কৃষক অনুমোদিত হয়নি</li>';
+}
+function esc_(v) { return escapeHtml(String(v == null ? '' : v)); }
+
+// Month-by-month, office-by-office: applications, approved count, seed kg.
+function renderMonthlySummary(farmers) {
+  const key = (dateStr, office) => (dateStr ? dateStr.slice(0, 7) : 'অজানা') + '|' + (office || 'অজানা');
+  const rows = {};
+  const ensure = (k, month, office) => {
+    if (!rows[k]) rows[k] = { month, office, applications: 0, approved: 0, seedKg: 0 };
+    return rows[k];
+  };
+  farmers.forEach(f => {
+    if (f.regDate) {
+      const month = f.regDate.slice(0, 7);
+      const k = key(f.regDate, f.officeName);
+      ensure(k, month, f.officeName).applications += 1;
+    }
+    if (f.approvedDate) {
+      const month = f.approvedDate.slice(0, 7);
+      const k = key(f.approvedDate, f.officeName);
+      const row = ensure(k, month, f.officeName);
+      row.approved += 1;
+      row.seedKg += Number(f.approvedSeedKg) || 0;
+    }
+  });
+  const sorted = Object.values(rows).sort((a, b) => b.month.localeCompare(a.month) || a.office.localeCompare(b.office));
+  const table = document.getElementById('monthlySummaryTable');
+  if (!sorted.length) {
+    table.innerHTML = '<tr><td class="text-muted small">কোনো তথ্য নেই</td></tr>';
+    return;
+  }
+  table.innerHTML = `
+    <tr><th>মাস</th><th>শাখা অফিস</th><th>নতুন আবেদন</th><th>বীজ পাওয়া কৃষক</th><th>মোট বীজ (কেজি)</th></tr>
+    ${sorted.map(r => `<tr>
+      <td>${esc_(bnMonthLabel(r.month))}</td>
+      <td>${esc_(r.office)}</td>
+      <td>${toBnNum(r.applications)}</td>
+      <td>${toBnNum(r.approved)}</td>
+      <td>${toBnNum(r.seedKg)}</td>
+    </tr>`).join('')}
+  `;
+}
+function bnMonthLabel(ym) {
+  if (!ym || ym === 'অজানা') return ym;
+  const [y, m] = ym.split('-');
+  return BN_MONTHS[Number(m) - 1] + ' ' + toBnNum(y);
 }
 
 function renderAdminFarmerList(farmers) {
@@ -964,16 +1166,18 @@ function renderAdminFarmerList(farmers) {
 
 document.getElementById('addOfficerBtn').addEventListener('click', async () => {
   if (!isOnline()) { toast('নতুন কর্মী যোগ করতে ইন্টারনেট প্রয়োজন', 'error'); return; }
+  const data = await getMasterData();
+  const officeNames = (data.offices || []).map(o => o.officeName).join(', ');
   const name = prompt('কর্মীর নাম:'); if (!name) return;
   const nid = prompt('NID নম্বর:'); if (!nid) return;
   const mobile = prompt('মোবাইল নম্বর:') || '';
   const pin = prompt('৪ সংখ্যার পিন:') || '1234';
-  const officeName = prompt('অফিসের নাম:') || '';
+  const officeName = prompt('অফিসের নাম (হুবহু লিখুন):\n' + officeNames) || '';
   let role = 'officer';
   let region = '';
   if (CURRENT_USER.role === 'super_admin') {
     role = prompt('রোল লিখুন (officer / admin / super_admin):', 'officer') || 'officer';
-    if (role === 'admin') region = prompt('এই অ্যাডমিনের দায়িত্বে থাকা জেলার নাম:') || '';
+    if (role === 'admin') region = prompt('এই অ্যাডমিনের দায়িত্বে থাকা শাখা অফিসের নাম:\n' + officeNames) || '';
   } else {
     region = CURRENT_USER.region || '';
   }
