@@ -8,7 +8,7 @@
 const CONFIG = {
   // Paste your deployed Google Apps Script Web App URL here.
   // See DEPLOYMENT_GUIDE.md — must end in /exec
-  API_BASE: 'https://script.google.com/macros/s/PASTE_YOUR_DEPLOYMENT_ID/exec',
+  API_BASE: 'https://script.google.com/macros/s/AKfycbyGf9YTI9kQ7JTz_yO_qR4StF49zy1EUqm1JPQ3hzIJ_I3S_Qtk4v_r-SILj6CEs7k/exec',
   // Used only if a farmer's own branch office (see Offices sheet) can't
   // be found — should rarely trigger once every officer's officeName
   // matches an Offices sheet row.
