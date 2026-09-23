@@ -255,6 +255,7 @@ button{font-family:inherit;}
   .print-head img{width:52px; height:52px;}
   .print-head h1{font-size:16px; margin:0;}
   .print-head p{font-size:11px; margin:0; color:#444;}
+  .print-farmer-photo{width:60px!important; height:60px!important; object-fit:cover; border-radius:6px; margin-left:auto; border:1px solid #ccc;}
   .print-grid{display:grid; grid-template-columns:1fr 1fr; gap:6px 18px; font-size:12px; margin-bottom:14px;}
   .print-grid div span{font-weight:700;}
   .print-section-title{font-size:13px; font-weight:700; background:#E6F4EA; padding:5px 8px; margin:10px 0 6px;}

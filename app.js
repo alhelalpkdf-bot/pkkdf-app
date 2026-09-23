@@ -8,7 +8,7 @@
 const CONFIG = {
   // Paste your deployed Google Apps Script Web App URL here.
   // See DEPLOYMENT_GUIDE.md — must end in /exec
-  API_BASE: 'https://script.google.com/macros/s/AKfycbyGf9YTI9kQ7JTz_yO_qR4StF49zy1EUqm1JPQ3hzIJ_I3S_Qtk4v_r-SILj6CEs7k/exec',
+  API_BASE: 'https://script.google.com/macros/s/PASTE_YOUR_DEPLOYMENT_ID/exec',
   // Used only if a farmer's own branch office (see Offices sheet) can't
   // be found — should rarely trigger once every officer's officeName
   // matches an Offices sheet row.
@@ -503,22 +503,26 @@ async function runFarmerSearch() {
   const list = document.getElementById('fuSearchResults');
   if (!q) { list.innerHTML = ''; return; }
   const farmers = await idbGetAll('farmers');
+  // String(...) guards against NID/formNo being stored as a NUMBER (Google
+  // Sheets does this automatically for plain-digit cells) — calling
+  // .toLowerCase() directly on a number throws and silently blanks the
+  // whole results list, which was the bug here.
   const matches = farmers.filter(f =>
-    (f.formNo || '').toLowerCase().includes(q) ||
-    (f.nid || '').toLowerCase().includes(q) ||
-    (f.farmerName || '').toLowerCase().includes(q)
+    String(f.formNo || '').toLowerCase().includes(q) ||
+    String(f.nid || '').toLowerCase().includes(q) ||
+    String(f.farmerName || '').toLowerCase().includes(q)
   );
 
   // Relevance: a name/form/NID that STARTS WITH the query ranks above
   // one that merely contains it somewhere in the middle.
   const rank = (f) => {
-    const name = (f.farmerName || '').toLowerCase();
+    const name = String(f.farmerName || '').toLowerCase();
     if (name.startsWith(q)) return 0;
-    if ((f.formNo || '').toLowerCase().startsWith(q) || (f.nid || '').toLowerCase().startsWith(q)) return 1;
+    if (String(f.formNo || '').toLowerCase().startsWith(q) || String(f.nid || '').toLowerCase().startsWith(q)) return 1;
     if (name.includes(q)) return 2;
     return 3;
   };
-  const results = matches.sort((a, b) => rank(a) - rank(b) || (a.farmerName || '').localeCompare(b.farmerName || '')).slice(0, 20);
+  const results = matches.sort((a, b) => rank(a) - rank(b) || String(a.farmerName || '').localeCompare(String(b.farmerName || ''))).slice(0, 20);
 
   list.innerHTML = results.length ? results.map(f => `
     <li>
@@ -733,6 +737,7 @@ function buildPrintArea(f) {
       <div class="print-head">
         <img src="icons/icon-192.png">
         <div><h1>পল্লী ক্ষুদ্র কৃষি উন্নয়ন ফাউন্ডেশন</h1><p>কৃষক প্রোফাইল — ফর্ম নম্বর: ${esc(f.formNo)}</p></div>
+        ${f.regPhotoUrl ? `<img class="print-farmer-photo" src="${esc(f.regPhotoUrl)}">` : ''}
       </div>
       <div class="print-section-title">মূল তথ্য</div>
       <div class="print-grid">
@@ -876,6 +881,7 @@ function renderOverdueList(elId, list) {
 async function renderReports() {
   await refreshFarmersCache(); // keep report numbers current when other officers have synced since boot
   const farmers = await idbGetAll('farmers');
+  renderMonthlySummary(farmers);
   const profitByOfficer = {};
   const countByCrop = {};
   farmers.forEach(f => {
@@ -889,16 +895,22 @@ async function renderReports() {
   renderOverdueList('overdueListReports', computeOverdue(farmers));
 
   document.getElementById('historyNidInput').oninput = debounce(async function () {
-    const nid = this.value.trim();
+    const nid = normalizeDigits(this.value.trim());
     const box = document.getElementById('historyResults');
     if (!nid) { box.innerHTML = ''; return; }
-    const matches = farmers.filter(f => String(f.nid) === nid);
+    const matches = farmers.filter(f => normalizeDigits(String(f.nid || '')) === nid);
     box.innerHTML = matches.length ? matches.map(f => `
       <div class="section-card" style="box-shadow:none;border:1px solid var(--border);">
         <strong>${escapeHtml(f.farmerName)}</strong> — ${escapeHtml(f.cropName)}<br>
         <span class="small text-muted">ফর্ম: ${escapeHtml(f.formNo)} • ${escapeHtml(f.status)} • নিবন্ধন: ${escapeHtml(f.regDate ? f.regDate.slice(0,10) : '')}</span>
       </div>`).join('') : '<p class="text-muted small">কোনো রেকর্ড পাওয়া যায়নি</p>';
   }, 250);
+}
+// Converts Bengali digits (০-৯) to plain English digits so a search box
+// works the same whether the phone's keyboard types NID numbers in
+// Bengali or English numerals.
+function normalizeDigits(s) {
+  return String(s).replace(/[০-৯]/g, d => String(BN_DIGITS.indexOf(d)));
 }
 
 function drawBarChart(canvasId, labels, values, color) {
@@ -1023,7 +1035,6 @@ async function renderAdmin() {
 
   renderPendingApprovals(farmers);
   renderApprovedFarmers(farmers);
-  renderMonthlySummary(farmers);
 
   if (!isOnline()) {
     document.getElementById('officerList').innerHTML = '<li class="text-muted small">কর্মী তালিকা দেখতে ইন্টারনেট প্রয়োজন</li>';
