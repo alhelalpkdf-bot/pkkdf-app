@@ -8,7 +8,7 @@
 const CONFIG = {
   // Paste your deployed Google Apps Script Web App URL here.
   // See DEPLOYMENT_GUIDE.md — must end in /exec
-  API_BASE: 'https://script.google.com/macros/s/AKfycbyGf9YTI9kQ7JTz_yO_qR4StF49zy1EUqm1JPQ3hzIJ_I3S_Qtk4v_r-SILj6CEs7k/exec',
+  API_BASE: 'https://script.google.com/macros/s/PASTE_YOUR_DEPLOYMENT_ID/exec',
   // Used only if a farmer's own branch office (see Offices sheet) can't
   // be found — should rarely trigger once every officer's officeName
   // matches an Offices sheet row.
@@ -555,8 +555,13 @@ async function openFollowUp(formNo) {
   document.getElementById('fuFarmerMeta').textContent =
     'ফর্ম: ' + farmer.formNo + ' • ' + farmer.cropName + ' • ' + farmer.village;
   const photoEl = document.getElementById('fuFarmerPhoto');
-  if (farmer.regPhotoUrl) { photoEl.src = farmer.regPhotoUrl; photoEl.classList.remove('d-none'); }
-  else { photoEl.classList.add('d-none'); }
+  if (farmer.regPhotoUrl) {
+    photoEl.src = farmer.regPhotoUrl;
+    photoEl.classList.remove('d-none');
+    photoEl.onerror = () => photoEl.classList.add('d-none');
+  } else {
+    photoEl.classList.add('d-none');
+  }
   renderStepTabs();
   const firstOpenStep = [1, 2, 3, 4].find(s => !farmer['step' + s + 'Json']) || 4;
   selectStep(firstOpenStep);
@@ -894,17 +899,23 @@ async function renderReports() {
   drawBarChart('chartCrop', Object.keys(countByCrop), Object.values(countByCrop), '#EFA512');
   renderOverdueList('overdueListReports', computeOverdue(farmers));
 
-  document.getElementById('historyNidInput').oninput = debounce(async function () {
-    const nid = normalizeDigits(this.value.trim());
-    const box = document.getElementById('historyResults');
-    if (!nid) { box.innerHTML = ''; return; }
+  document.getElementById('historyNidInput').oninput = debounce(runNidHistorySearch, 250);
+  runNidHistorySearch(); // also run immediately, in case a value is already sitting in the box from before
+}
+
+function runNidHistorySearch() {
+  const inputEl = document.getElementById('historyNidInput');
+  const nid = normalizeDigits(inputEl.value.trim());
+  const box = document.getElementById('historyResults');
+  if (!nid) { box.innerHTML = ''; return; }
+  idbGetAll('farmers').then(farmers => {
     const matches = farmers.filter(f => normalizeDigits(String(f.nid || '')) === nid);
     box.innerHTML = matches.length ? matches.map(f => `
       <div class="section-card" style="box-shadow:none;border:1px solid var(--border);">
         <strong>${escapeHtml(f.farmerName)}</strong> — ${escapeHtml(f.cropName)}<br>
         <span class="small text-muted">ফর্ম: ${escapeHtml(f.formNo)} • ${escapeHtml(f.status)} • নিবন্ধন: ${escapeHtml(f.regDate ? f.regDate.slice(0,10) : '')}</span>
       </div>`).join('') : '<p class="text-muted small">কোনো রেকর্ড পাওয়া যায়নি</p>';
-  }, 250);
+  });
 }
 // Converts Bengali digits (০-৯) to plain English digits so a search box
 // works the same whether the phone's keyboard types NID numbers in
