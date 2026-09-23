@@ -226,6 +226,14 @@ button{font-family:inherit;}
 /* ---------- Map ---------- */
 #gisMap{height:calc(100vh - 220px); min-height:420px; border-radius:var(--radius); overflow:hidden; box-shadow:var(--shadow);}
 .leaflet-popup-content{font-family:'Hind Siliguri', sans-serif;}
+.map-pin{
+  width:34px; height:34px; border-radius:50% 50% 50% 0; transform:rotate(-45deg);
+  display:flex; align-items:center; justify-content:center;
+  box-shadow:0 2px 6px rgba(0,0,0,.35); border:2px solid #fff;
+}
+.map-pin-office{background:var(--sky);}
+.map-pin-farmer{background:var(--danger);}
+.map-pin-emoji{display:inline-block; transform:rotate(45deg); font-size:16px; line-height:1;}
 
 /* ---------- Toasts ---------- */
 .toast-host{position:fixed; top:calc(14px + env(safe-area-inset-top)); left:50%; transform:translateX(-50%); z-index:999; display:flex; flex-direction:column; gap:8px; width:min(92vw,380px);}

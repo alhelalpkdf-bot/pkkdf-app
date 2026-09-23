@@ -8,7 +8,7 @@
 const CONFIG = {
   // Paste your deployed Google Apps Script Web App URL here.
   // See DEPLOYMENT_GUIDE.md — must end in /exec
-  API_BASE: 'https://script.google.com/macros/s/AKfycbyGf9YTI9kQ7JTz_yO_qR4StF49zy1EUqm1JPQ3hzIJ_I3S_Qtk4v_r-SILj6CEs7k/exec',
+  API_BASE: 'https://script.google.com/macros/s/PASTE_YOUR_DEPLOYMENT_ID/exec',
   // Used only if a farmer's own branch office (see Offices sheet) can't
   // be found — should rarely trigger once every officer's officeName
   // matches an Offices sheet row.
@@ -1018,7 +1018,7 @@ async function renderMap() {
   offices.forEach(o => {
     if (!o.lat || !o.lng) return;
     L.marker([Number(o.lat), Number(o.lng)], {
-      icon: L.divIcon({ className: '', html: '🏢', iconSize: [26, 26] })
+      icon: L.divIcon({ className: '', html: '<div class="map-pin map-pin-office"><span class="map-pin-emoji">🏢</span></div>', iconSize: [34, 34], iconAnchor: [17, 34], popupAnchor: [0, -30] })
     }).addTo(leafletMap).bindPopup('<strong>' + escapeHtml(o.officeName) + '</strong><br>শাখা অফিস');
   });
 
@@ -1028,7 +1028,8 @@ async function renderMap() {
     const officeLng = office ? Number(office.lng) : CONFIG.FALLBACK_OFFICE_LNG;
     const dist = haversineKm(Number(f.gpsLat), Number(f.gpsLng), officeLat, officeLng);
     L.marker([Number(f.gpsLat), Number(f.gpsLng)], {
-      icon: L.divIcon({ className: '', html: '📌', iconSize: [22, 22] })
+      icon: L.divIcon({ className: '', html: '<div class="map-pin map-pin-farmer"><span class="map-pin-emoji">📌</span></div>', iconSize: [34, 34], iconAnchor: [17, 34], popupAnchor: [0, -30] }),
+      zIndexOffset: 1000 // keeps farmer pins clickable above office pins when they overlap
     }).addTo(leafletMap).bindPopup(
       `<strong>${escapeHtml(f.farmerName)}</strong><br>অফিসার: ${escapeHtml(f.officerName || '-')}<br>শাখা: ${escapeHtml(f.officeName || '-')}<br>ফসলের ধাপ: ${escapeHtml(f.status || '-')}<br>দূরত্ব: ${dist.toFixed(1)} কিমি`
     );
