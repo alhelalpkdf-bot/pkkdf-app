@@ -230,17 +230,23 @@
           <!-- LEFT: Crop info -->
           <div class="fu-col section-card">
             <h3 class="fu-col-title">🌾 ফসলের তথ্য</h3>
-            <label class="form-label">পর্যবেক্ষণের তারিখ</label>
-            <input type="date" class="form-control mb-2" id="s_date">
+            <label class="form-label">পর্যবেক্ষণের তারিখ ও সময়</label>
+            <input type="datetime-local" class="form-control mb-2" id="s_date">
+            <div id="s_sowingWrap" class="d-none">
+              <label class="form-label">বীজ বপন/রোপনের তারিখ</label>
+              <input type="date" class="form-control mb-2" id="s_sowingDate">
+            </div>
             <label class="form-label">ফসলের বয়স (দিন)</label>
-            <input type="number" class="form-control mb-2" id="s_cropAge">
+            <div class="form-control mb-2 readonly-field" id="s_cropAgeDisplay">—</div>
             <label class="form-label">রোগ/পোকার আক্রমণ</label>
             <input type="text" class="form-control mb-2" id="s_disease">
             <label class="form-label">প্রতিকার</label>
             <input type="text" class="form-control mb-2" id="s_remedy">
             <label class="form-label">অবস্থা (স্কেল ১০০%)</label>
             <input type="range" class="form-range" id="s_rating" min="0" max="100" value="70">
-            <div class="text-center small text-muted"><span id="s_ratingVal">৭০</span>%</div>
+            <div class="text-center small text-muted mb-2"><span id="s_ratingVal">৭০</span>%</div>
+            <label class="form-label">মন্তব্য</label>
+            <textarea class="form-control" id="s_comment" rows="2" placeholder="নিজের মতো করে মন্তব্য লিখুন"></textarea>
           </div>
 
           <!-- MIDDLE: Photo + location -->
