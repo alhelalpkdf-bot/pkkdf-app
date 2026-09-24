@@ -8,7 +8,7 @@
 const CONFIG = {
   // Paste your deployed Google Apps Script Web App URL here.
   // See DEPLOYMENT_GUIDE.md — must end in /exec
-  API_BASE: 'https://script.google.com/macros/s/AKfycbyGf9YTI9kQ7JTz_yO_qR4StF49zy1EUqm1JPQ3hzIJ_I3S_Qtk4v_r-SILj6CEs7k/exec',
+  API_BASE: 'https://script.google.com/macros/s/PASTE_YOUR_DEPLOYMENT_ID/exec',
   // Used only if a farmer's own branch office (see Offices sheet) can't
   // be found — should rarely trigger once every officer's officeName
   // matches an Offices sheet row.
@@ -585,12 +585,14 @@ function selectStep(step) {
   ACTIVE_STEP = step;
   document.querySelectorAll('.step-tab').forEach(t => t.classList.toggle('active', Number(t.getAttribute('data-step')) === step));
   document.getElementById('step4Extra').classList.toggle('d-none', step !== 4);
+  document.getElementById('s_sowingWrap').classList.toggle('d-none', step !== 1);
 
   document.getElementById('stepForm').reset();
   document.getElementById('s_photoPreview').classList.add('d-none');
   document.getElementById('s_gpsResult').textContent = 'GPS নেওয়া হয়নি';
   document.getElementById('s_distance').textContent = 'অফিস থেকে দূরত্ব: —';
-  document.getElementById('s_date').value = new Date().toISOString().slice(0, 10);
+  document.getElementById('s_date').value = new Date().toISOString().slice(0, 16);
+  if (step === 1) document.getElementById('s_sowingDate').value = ACTIVE_FARMER.sowingDate || '';
   stepGps = null; stepPhotoBase64 = null;
 
   const existing = ACTIVE_FARMER['step' + step + 'Json'];
@@ -598,9 +600,10 @@ function selectStep(step) {
     try {
       const d = JSON.parse(existing);
       document.getElementById('s_date').value = d.date || '';
-      document.getElementById('s_cropAge').value = d.cropAge || '';
+      if (step === 1) document.getElementById('s_sowingDate').value = d.sowingDate || ACTIVE_FARMER.sowingDate || '';
       document.getElementById('s_disease').value = d.disease || '';
       document.getElementById('s_remedy').value = d.remedy || '';
+      document.getElementById('s_comment').value = d.comment || '';
       document.getElementById('s_rating').value = d.rating || 70;
       document.getElementById('s_ratingVal').textContent = toBnNum(d.rating || 70);
       if (d.expense) {
@@ -619,7 +622,25 @@ function selectStep(step) {
   } else {
     updateExpenseTotal();
   }
+  updateCropAgeDisplay();
 }
+
+// Crop age is computed automatically from the sowing date (step 1) or
+// the farmer's already-saved sowing date (steps 2-4) — the officer no
+// longer types this in by hand.
+function updateCropAgeDisplay() {
+  const obsVal = document.getElementById('s_date').value;
+  const sowing = ACTIVE_STEP === 1 ? document.getElementById('s_sowingDate').value : ACTIVE_FARMER.sowingDate;
+  const disp = document.getElementById('s_cropAgeDisplay');
+  if (!obsVal || !sowing) { disp.textContent = '—'; return; }
+  const obsDate = new Date(obsVal);
+  const sowDate = new Date(sowing);
+  if (isNaN(obsDate) || isNaN(sowDate)) { disp.textContent = '—'; return; }
+  const days = Math.floor((obsDate - sowDate) / 86400000);
+  disp.textContent = toBnNum(Math.max(0, days)) + ' দিন';
+}
+document.getElementById('s_date').addEventListener('input', updateCropAgeDisplay);
+document.getElementById('s_sowingDate').addEventListener('input', updateCropAgeDisplay);
 
 document.getElementById('s_rating').addEventListener('input', function () {
   document.getElementById('s_ratingVal').textContent = toBnNum(this.value);
@@ -672,11 +693,18 @@ document.getElementById('stepForm').addEventListener('submit', async (e) => {
   };
   const expenseTotal = Object.values(expense).reduce((a, b) => a + b, 0);
 
+  const obsVal = document.getElementById('s_date').value;
+  const sowingVal = ACTIVE_STEP === 1 ? document.getElementById('s_sowingDate').value : ACTIVE_FARMER.sowingDate;
+  const computedAge = (obsVal && sowingVal && !isNaN(new Date(obsVal)) && !isNaN(new Date(sowingVal)))
+    ? Math.max(0, Math.floor((new Date(obsVal) - new Date(sowingVal)) / 86400000)) : '';
+
   const data = {
-    date: document.getElementById('s_date').value,
-    cropAge: document.getElementById('s_cropAge').value,
+    date: obsVal,
+    sowingDate: ACTIVE_STEP === 1 ? sowingVal : undefined,
+    cropAge: computedAge,
     disease: document.getElementById('s_disease').value,
     remedy: document.getElementById('s_remedy').value,
+    comment: document.getElementById('s_comment').value,
     rating: document.getElementById('s_rating').value,
     gps: stepGps, expense, expense_total: expenseTotal,
     // Kept locally so the print profile can show a step photo even
@@ -699,6 +727,7 @@ document.getElementById('stepForm').addEventListener('submit', async (e) => {
   // Update local cache immediately
   ACTIVE_FARMER['step' + ACTIVE_STEP + 'Json'] = JSON.stringify(data);
   ACTIVE_FARMER.lastFollowUpDate = data.date;
+  if (ACTIVE_STEP === 1 && sowingVal) ACTIVE_FARMER.sowingDate = sowingVal;
   ACTIVE_FARMER.totalExpense = (Number(ACTIVE_FARMER.totalExpense) || 0) + expenseTotal;
   if (ACTIVE_STEP === 4) {
     ACTIVE_FARMER.yieldQty = data.yieldQty;
@@ -723,13 +752,29 @@ document.getElementById('stepForm').addEventListener('submit', async (e) => {
 });
 
 /* ---------- Print profile (2 A4 pages) ---------- */
-document.getElementById('printProfileBtn').addEventListener('click', () => {
+document.getElementById('printProfileBtn').addEventListener('click', async () => {
   if (!ACTIVE_FARMER) return;
-  buildPrintArea(ACTIVE_FARMER);
-  setTimeout(() => window.print(), 100);
+  const office = await getOfficeCoords(ACTIVE_FARMER.officeName); // same office used for the live distance shown while filling a step
+  buildPrintArea(ACTIVE_FARMER, office);
+  await waitForPrintImages_(); // avoid printing a step photo before it has actually loaded (was showing up solid black)
+  window.print();
 });
 
-function buildPrintArea(f) {
+// Resolves once every <img> inside the print area has either loaded or
+// failed (with a short overall timeout so a slow/broken image link can
+// never block printing indefinitely).
+function waitForPrintImages_() {
+  const imgs = Array.from(document.querySelectorAll('#printArea img'));
+  if (!imgs.length) return Promise.resolve();
+  const loaders = imgs.map(img => new Promise(resolve => {
+    if (img.complete) return resolve();
+    img.addEventListener('load', resolve, { once: true });
+    img.addEventListener('error', resolve, { once: true });
+  }));
+  return Promise.race([Promise.all(loaders), new Promise(r => setTimeout(r, 4000))]);
+}
+
+function buildPrintArea(f, office) {
   const steps = [1, 2, 3, 4].map(s => {
     try { return JSON.parse(f['step' + s + 'Json'] || '{}'); } catch (e) { return {}; }
   });
@@ -737,6 +782,9 @@ function buildPrintArea(f) {
   const yieldQty = numOr0_(f.yieldQty);
   const marketPrice = numOr0_(f.marketPrice);
   const profitLoss = numOr0_(f.profitLoss);
+  // One continuous container — the browser paginates naturally at print
+  // time (a short profile stays on 1 page; a fuller one flows onto a
+  // 2nd without us forcing a fixed 2-page split).
   const html = `
     <div class="print-page">
       <div class="print-head">
@@ -754,21 +802,17 @@ function buildPrintArea(f) {
         <div><span>জমির পরিমাণ:</span> ${esc(f.landBigha || 0)} বিঘা ${esc(f.landShotangsho || 0)} শতাংশ ${esc(f.landKatha || 0)} কাঠা (মোট ${esc(f.landSize || 0)} বিঘা)</div>
         <div><span>ফসল:</span> ${esc(f.cropName)}</div>
         <div><span>মাটির ধরন / মৌসুম:</span> ${esc(f.soilType || '-')} / ${esc(f.season || '-')}</div>
+        <div><span>বীজ বপন/রোপনের তারিখ:</span> ${esc(f.sowingDate ? formatBnDate(f.sowingDate) : '-')}</div>
         <div><span>অনুমোদিত বীজ:</span> ${esc(f.approvedSeedKg || 0)} কেজি</div>
         <div><span>দায়িত্বরত অফিসার:</span> ${esc(f.officerName)} (${esc(f.officeName || '')})</div>
         <div><span>নিবন্ধনের তারিখ:</span> ${esc(f.regDate ? formatBnDate(f.regDate.slice(0,10)) : '')}</div>
       </div>
-      <div class="print-section-title">পর্যবেক্ষণ ধাপসমূহ (১ ও ২)</div>
+      <div class="print-section-title">পর্যবেক্ষণ ধাপসমূহ</div>
       <div class="print-steps">
-        ${printStepCard(steps[0], 1)}
-        ${printStepCard(steps[1], 2)}
-      </div>
-    </div>
-    <div class="print-page">
-      <div class="print-section-title">পর্যবেক্ষণ ধাপসমূহ (৩ ও ৪)</div>
-      <div class="print-steps">
-        ${printStepCard(steps[2], 3)}
-        ${printStepCard(steps[3], 4)}
+        ${printStepCard(steps[0], 1, office)}
+        ${printStepCard(steps[1], 2, office)}
+        ${printStepCard(steps[2], 3, office)}
+        ${printStepCard(steps[3], 4, office)}
       </div>
       <div class="print-section-title">আর্থিক সারসংক্ষেপ</div>
       <div class="print-fin">
@@ -786,7 +830,7 @@ function buildPrintArea(f) {
   document.getElementById('printArea').innerHTML = html;
 }
 
-function printStepCard(d, n) {
+function printStepCard(d, n, office) {
   if (!d || !d.date) return `<div class="print-step-card"><strong>ধাপ ${n}</strong><br><span style="color:#999">তথ্য নেই</span></div>`;
   const photo = d.photoUrl || d.photo;
   const exp = d.expense || {};
@@ -794,13 +838,16 @@ function printStepCard(d, n) {
     ['জমি প্রস্তুতি', exp.landPrep], ['নিড়ানি', exp.weeding], ['সার', exp.fertilizer],
     ['কীটনাশক', exp.pesticide], ['সেচ', exp.irrigation], ['শ্রমিক', exp.labor]
   ].filter(([, v]) => numOr0_(v) > 0).map(([label, v]) => `${label}: ৳${esc(numOr0_(v))}`).join(', ');
+  const distKm = (d.gps && d.gps.lat && office) ? haversineKm(Number(d.gps.lat), Number(d.gps.lng), office.lat, office.lng) : null;
   return `<div class="print-step-card">
     ${photo ? `<img src="${esc(photo)}">` : ''}
-    <strong>ধাপ ${n} — ${esc(formatBnDate(d.date))}</strong><br>
+    <strong>ধাপ ${n} — ${esc(formatBnDateTime(d.date))}</strong><br>
     ফসলের বয়স: ${esc(d.cropAge || '-')} দিন<br>
     রোগ/পোকা: ${esc(d.disease || '-')}<br>
     প্রতিকার: ${esc(d.remedy || '-')}<br>
     অবস্থা: ${esc(d.rating || '-')}%<br>
+    ${d.comment ? `মন্তব্য: ${esc(d.comment)}<br>` : ''}
+    ${distKm != null ? `অফিস থেকে দূরত্ব: ${distKm.toFixed(1)} কিমি<br>` : ''}
     ${expLines ? `খরচের বিবরণ: ${expLines}<br>` : ''}
     মোট খরচ: ৳ ${esc(numOr0_(d.expense_total))}
   </div>`;
@@ -997,6 +1044,10 @@ function roundRectPath_(ctx, x, y, w, h, r) {
    ================================================================ */
 let leafletMap = null;
 async function renderMap() {
+  await refreshFarmersCache(); // Map tab wasn't pulling fresh data from the server —
+                                // it only showed whatever was cached the last time the
+                                // app booted, so a farmer registered afterward (even on
+                                // this same device) wouldn't show until next reload.
   const farmers = await idbGetAll('farmers');
   const withGps = farmers.filter(f => f.gpsLat && f.gpsLng);
   const data = await getMasterData();
@@ -1277,6 +1328,18 @@ function formatBnDate(isoDate) {
   const d = new Date(isoDate);
   if (isNaN(d)) return isoDate;
   return toBnNum(d.getDate()) + ' ' + BN_MONTHS[d.getMonth()] + ' ' + toBnNum(d.getFullYear());
+}
+// Same as formatBnDate but also shows the time (AM/PM) — used for the
+// observation date+time captured per follow-up step.
+function formatBnDateTime(isoDateTime) {
+  if (!isoDateTime) return '';
+  const d = new Date(isoDateTime);
+  if (isNaN(d)) return isoDateTime;
+  let h = d.getHours();
+  const m = d.getMinutes();
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  h = h % 12; if (h === 0) h = 12;
+  return formatBnDate(isoDateTime) + ', ' + toBnNum(h) + ':' + toBnNum(String(m).padStart(2, '0')) + ' ' + ampm;
 }
 
 /* ================================================================
