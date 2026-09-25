@@ -8,7 +8,7 @@
 const CONFIG = {
   // Paste your deployed Google Apps Script Web App URL here.
   // See DEPLOYMENT_GUIDE.md — must end in /exec
-  API_BASE: 'https://script.google.com/macros/s/AKfycbyGf9YTI9kQ7JTz_yO_qR4StF49zy1EUqm1JPQ3hzIJ_I3S_Qtk4v_r-SILj6CEs7k/exec',
+  API_BASE: 'https://script.google.com/macros/s/PASTE_YOUR_DEPLOYMENT_ID/exec',
   // Used only if a farmer's own branch office (see Offices sheet) can't
   // be found — should rarely trigger once every officer's officeName
   // matches an Offices sheet row.
@@ -165,12 +165,58 @@ async function bootApp() {
   if (isOnline()) syncQueue();
 }
 
+// "মোট জমি" only counts land for farmers who have actually been approved
+// (and beyond) — an application still awaiting approval hasn't had its
+// land verified/acted on yet, so it shouldn't count toward the total.
+function totalApprovedLandBigha(farmers) {
+  return farmers
+    .filter(f => f.status && f.status !== 'নিবন্ধিত')
+    .reduce((s, f) => s + (Number(f.landSize) || 0), 0);
+}
+
+// A farmer's map pin normally uses the GPS captured at registration
+// (f.gpsLat/gpsLng). Many officers only capture GPS later, during a
+// follow-up step — so if registration GPS is missing, fall back to the
+// most recent follow-up step that has one, rather than showing nothing.
+function getFarmerMapCoords(f) {
+  if (f.gpsLat && f.gpsLng) return { lat: Number(f.gpsLat), lng: Number(f.gpsLng) };
+  for (const s of [4, 3, 2, 1]) {
+    try {
+      const d = JSON.parse(f['step' + s + 'Json'] || '{}');
+      if (d.gps && d.gps.lat && d.gps.lng) return { lat: Number(d.gps.lat), lng: Number(d.gps.lng) };
+    } catch (e) {}
+  }
+  return null;
+}
+
+// Merges a server-fetched farmer record into IndexedDB WITHOUT letting it
+// regress data that's already stored locally. This guards against a race
+// where a background refresh (kicked off just before a step/approval
+// finished saving) returns a slightly-stale sheet row and would otherwise
+// overwrite a step the person just completed — which was making a fully
+// finished farmer appear to jump back to "ধাপ ১" again.
+const STATUS_ORDER = ['নিবন্ধিত', 'অনুমোদিত', 'ধাপ ১ সম্পন্ন', 'ধাপ ২ সম্পন্ন', 'ধাপ ৩ সম্পন্ন', 'সম্পন্ন'];
+async function mergeFarmerFromServer(f) {
+  const existing = await idbGet('farmers', f.formNo);
+  if (existing) {
+    ['step1Json', 'step2Json', 'step3Json', 'step4Json', 'sowingDate',
+     'approvedSeedKg', 'approvedDate', 'approvedBy', 'totalExpense',
+     'profitLoss', 'yieldQty', 'marketPrice'].forEach(key => {
+      if (!f[key] && existing[key]) f[key] = existing[key];
+    });
+    const existingRank = STATUS_ORDER.indexOf(existing.status);
+    const incomingRank = STATUS_ORDER.indexOf(f.status);
+    if (existingRank > incomingRank) f.status = existing.status;
+  }
+  await idbPut('farmers', f);
+}
+
 async function refreshFarmersCache() {
   if (!isOnline()) return;
   try {
     const res = await apiGet('farmers', { requesterId: requesterId() });
     if (res.farmers) {
-      for (const f of res.farmers) await idbPut('farmers', f);
+      for (const f of res.farmers) await mergeFarmerFromServer(f);
     }
   } catch (e) { /* offline or server hiccup — local cache still used */ }
 }
@@ -869,7 +915,7 @@ let chartSeed, chartOfficer, chartCrop;
 async function renderDashboard() {
   const farmers = await idbGetAll('farmers');
   document.getElementById('kpiFarmers').textContent = toBnNum(farmers.length);
-  document.getElementById('kpiLand').textContent = toBnNum(farmers.reduce((s, f) => s + (Number(f.landSize) || 0), 0).toFixed(1));
+  document.getElementById('kpiLand').textContent = toBnNum(totalApprovedLandBigha(farmers).toFixed(2));
 
   const overdue = computeOverdue(farmers);
   document.getElementById('kpiOverdue').textContent = toBnNum(overdue.length);
@@ -885,7 +931,7 @@ async function renderDashboard() {
     // requesterId lets the server return only what this role is scoped to see.
     apiGet('farmers', { requesterId: requesterId() }).then(res => {
       if (res.farmers) {
-        Promise.all(res.farmers.map(f => idbPut('farmers', f))).then(() => {
+        Promise.all(res.farmers.map(f => mergeFarmerFromServer(f))).then(() => {
           // Re-render if the user is still looking at the home screen,
           // so newly-synced counts/charts show up without a manual nav.
           if (document.getElementById('screen-home').classList.contains('active-screen')) {
@@ -902,7 +948,7 @@ async function renderDashboard() {
 async function renderDashboardNumbersOnly() {
   const farmers = await idbGetAll('farmers');
   document.getElementById('kpiFarmers').textContent = toBnNum(farmers.length);
-  document.getElementById('kpiLand').textContent = toBnNum(farmers.reduce((s, f) => s + (Number(f.landSize) || 0), 0).toFixed(1));
+  document.getElementById('kpiLand').textContent = toBnNum(totalApprovedLandBigha(farmers).toFixed(2));
   const overdue = computeOverdue(farmers);
   document.getElementById('kpiOverdue').textContent = toBnNum(overdue.length);
   renderOverdueList('overdueListHome', overdue.slice(0, 5));
@@ -1049,7 +1095,13 @@ async function renderMap() {
                                 // app booted, so a farmer registered afterward (even on
                                 // this same device) wouldn't show until next reload.
   const farmers = await idbGetAll('farmers');
-  const withGps = farmers.filter(f => f.gpsLat && f.gpsLng);
+  // Use each farmer's registration GPS if present, else fall back to the
+  // most recent follow-up step's GPS (see getFarmerMapCoords) — many
+  // officers only capture location during a follow-up visit, not at
+  // registration, so requiring registration GPS was hiding most pins.
+  const withGps = farmers
+    .map(f => ({ f, coords: getFarmerMapCoords(f) }))
+    .filter(x => x.coords);
   const data = await getMasterData();
   const offices = data.offices || [];
 
@@ -1073,12 +1125,12 @@ async function renderMap() {
     }).addTo(leafletMap).bindPopup('<strong>' + escapeHtml(o.officeName) + '</strong><br>শাখা অফিস');
   });
 
-  withGps.forEach(f => {
+  withGps.forEach(({ f, coords }) => {
     const office = offices.find(o => o.officeName === f.officeName);
     const officeLat = office ? Number(office.lat) : CONFIG.FALLBACK_OFFICE_LAT;
     const officeLng = office ? Number(office.lng) : CONFIG.FALLBACK_OFFICE_LNG;
-    const dist = haversineKm(Number(f.gpsLat), Number(f.gpsLng), officeLat, officeLng);
-    L.marker([Number(f.gpsLat), Number(f.gpsLng)], {
+    const dist = haversineKm(coords.lat, coords.lng, officeLat, officeLng);
+    L.marker([coords.lat, coords.lng], {
       icon: L.divIcon({ className: '', html: '<div class="map-pin map-pin-farmer"><span class="map-pin-emoji">📌</span></div>', iconSize: [34, 34], iconAnchor: [17, 34], popupAnchor: [0, -30] }),
       zIndexOffset: 1000 // keeps farmer pins clickable above office pins when they overlap
     }).addTo(leafletMap).bindPopup(
