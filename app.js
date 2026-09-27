@@ -8,7 +8,7 @@
 const CONFIG = {
   // Paste your deployed Google Apps Script Web App URL here.
   // See DEPLOYMENT_GUIDE.md — must end in /exec
-  API_BASE: 'https://script.google.com/macros/s/AKfycbyGf9YTI9kQ7JTz_yO_qR4StF49zy1EUqm1JPQ3hzIJ_I3S_Qtk4v_r-SILj6CEs7k/exec',
+  API_BASE: 'https://script.google.com/macros/s/PASTE_YOUR_DEPLOYMENT_ID/exec',
   // Used only if a farmer's own branch office (see Offices sheet) can't
   // be found — should rarely trigger once every officer's officeName
   // matches an Offices sheet row.
@@ -639,12 +639,13 @@ function selectStep(step) {
   document.getElementById('s_distance').textContent = 'অফিস থেকে দূরত্ব: —';
   document.getElementById('s_date').value = new Date().toISOString().slice(0, 16);
   if (step === 1) document.getElementById('s_sowingDate').value = ACTIVE_FARMER.sowingDate || '';
-  stepGps = null; stepPhotoBase64 = null;
+  stepGps = null; stepPhotoBase64 = null; ACTIVE_STEP_EXISTING = null;
 
   const existing = ACTIVE_FARMER['step' + step + 'Json'];
   if (existing) {
     try {
       const d = JSON.parse(existing);
+      ACTIVE_STEP_EXISTING = d; // remembered so a resubmit without retaking GPS/photo doesn't erase them
       document.getElementById('s_date').value = d.date || '';
       if (step === 1) document.getElementById('s_sowingDate').value = d.sowingDate || ACTIVE_FARMER.sowingDate || '';
       document.getElementById('s_disease').value = d.disease || '';
@@ -652,6 +653,28 @@ function selectStep(step) {
       document.getElementById('s_comment').value = d.comment || '';
       document.getElementById('s_rating').value = d.rating || 70;
       document.getElementById('s_ratingVal').textContent = toBnNum(d.rating || 70);
+
+      // Restore the previously captured GPS reading and distance —
+      // these were being shown as "not taken yet" on reopen, and a
+      // resubmit would then genuinely wipe them out.
+      if (d.gps && d.gps.lat) {
+        stepGps = d.gps;
+        document.getElementById('s_gpsResult').textContent = '✅ ' + d.gps.lat + ', ' + d.gps.lng;
+        getOfficeCoords(ACTIVE_FARMER.officeName).then(office => {
+          const distKm = haversineKm(Number(d.gps.lat), Number(d.gps.lng), office.lat, office.lng);
+          document.getElementById('s_distance').textContent = 'অফিস থেকে দূরত্ব: ' + toBnNum(distKm.toFixed(1)) + ' কিমি';
+        });
+      }
+      // Restore the previously taken photo preview (from the permanent
+      // Drive link once synced, or the local copy if not yet synced).
+      const existingPhoto = d.photoUrl || d.photo;
+      if (existingPhoto) {
+        const preview = document.getElementById('s_photoPreview');
+        preview.src = existingPhoto;
+        preview.classList.remove('d-none');
+        preview.onerror = () => preview.classList.add('d-none');
+      }
+
       if (d.expense) {
         ['landPrep', 'weeding', 'fertilizer', 'pesticide', 'irrigation', 'labor'].forEach(k => {
           const el = document.getElementById('e_' + k);
@@ -670,6 +693,7 @@ function selectStep(step) {
   }
   updateCropAgeDisplay();
 }
+let ACTIVE_STEP_EXISTING = null;
 
 // Crop age is computed automatically from the sowing date (step 1) or
 // the farmer's already-saved sowing date (steps 2-4) — the officer no
@@ -752,11 +776,18 @@ document.getElementById('stepForm').addEventListener('submit', async (e) => {
     remedy: document.getElementById('s_remedy').value,
     comment: document.getElementById('s_comment').value,
     rating: document.getElementById('s_rating').value,
-    gps: stepGps, expense, expense_total: expenseTotal,
+    // If GPS/photo weren't retaken while editing an already-filled step,
+    // fall back to what was saved before instead of wiping it out.
+    gps: stepGps || (ACTIVE_STEP_EXISTING && ACTIVE_STEP_EXISTING.gps) || null,
+    expense, expense_total: expenseTotal,
     // Kept locally so the print profile can show a step photo even
     // before this step has synced and the server has returned a
     // permanent Drive link (data.photoUrl, merged in by the server).
-    photo: stepPhotoBase64 || null
+    photo: stepPhotoBase64 || (ACTIVE_STEP_EXISTING && ACTIVE_STEP_EXISTING.photo) || null,
+    // The already-uploaded Drive link, carried forward as-is unless a
+    // new photo is taken now (in which case the server overwrites this
+    // with the new upload's link).
+    photoUrl: (ACTIVE_STEP_EXISTING && ACTIVE_STEP_EXISTING.photoUrl) || undefined
   };
   if (ACTIVE_STEP === 4) {
     data.yieldQty = Number(document.getElementById('p_yield').value) || 0;
