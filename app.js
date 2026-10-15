@@ -58,6 +58,19 @@ function idbPut(store, value) {
     const r = os.put(value); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
   }));
 }
+// একই ট্রানজেকশনে পড়া+লেখা — দুই জায়গা একসাথে লিখলে একে অপরের নতুন ডাটা মুছে দিতে পারবে না।
+function idbUpdate(store, key, fn) {
+  return openDb().then(db => new Promise((res, rej) => {
+    const tx = db.transaction(store, 'readwrite');
+    const os = tx.objectStore(store);
+    let out;
+    const g = os.get(key);
+    g.onsuccess = () => { out = fn(g.result); if (out) os.put(out); };
+    tx.oncomplete = () => res(out);
+    tx.onerror = () => rej(tx.error);
+    tx.onabort = () => rej(tx.error || new Error('IDB abort'));
+  }));
+}
 function idbDelete(store, key) {
   return idbTx(store, 'readwrite').then(os => new Promise((res, rej) => {
     const r = os.delete(key); r.onsuccess = () => res(); r.onerror = () => rej(r.error);
@@ -67,17 +80,33 @@ function idbDelete(store, key) {
 /* ================================================================
    NETWORK HELPERS
    ================================================================ */
+// fetch + টাইমআউট + নিরাপদ JSON পার্স। সার্ভার HTML ত্রুটি পাঠালে (যেমন পুরনো ডেপ্লয়মেন্ট) পরিষ্কার বার্তা দেয়।
+async function fetchJson_(url, opts, ms) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms || 90000);
+  try {
+    const r = await fetch(url, Object.assign({}, opts, { signal: ctrl.signal }));
+    const txt = await r.text();
+    try { return JSON.parse(txt); }
+    catch (e) { throw new Error('সার্ভারের উত্তর বোঝা যায়নি — Apps Script "New version" দিয়ে ডেপ্লয় করা হয়েছে কি?'); }
+  } catch (e) {
+    if (e.name === 'AbortError') throw new Error('সার্ভার সময়মতো সাড়া দেয়নি');
+    throw e;
+  } finally { clearTimeout(timer); }
+}
 function apiGet(action, params) {
   const qs = new URLSearchParams(Object.assign({ action }, params || {})).toString();
-  return fetch(CONFIG.API_BASE + '?' + qs).then(r => r.json());
+  return fetchJson_(CONFIG.API_BASE + '?' + qs, {}, 60000);
 }
 function apiPost(action, payload) {
-  return fetch(CONFIG.API_BASE, {
+  return fetchJson_(CONFIG.API_BASE, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // avoids CORS preflight on Apps Script
     body: JSON.stringify(Object.assign({ action }, payload))
-  }).then(r => r.json());
+  }, 120000);
 }
+function apiOk_(res) { return !!res && res.ok !== false && !res.error; }
+function apiErr_(res) { return (res && (res.message || res.error)) || 'সার্ভারে সমস্যা'; }
 
 function isOnline() { return navigator.onLine; }
 
@@ -179,7 +208,7 @@ function totalApprovedLandBigha(farmers) {
 // follow-up step — so if registration GPS is missing, fall back to the
 // most recent follow-up step that has one, rather than showing nothing.
 function getFarmerMapCoords(f) {
-  if (f.gpsLat && f.gpsLng) return { lat: Number(f.gpsLat), lng: Number(f.gpsLng) };
+  if (f.gpsLat && f.gpsLng && isFinite(Number(f.gpsLat)) && isFinite(Number(f.gpsLng))) return { lat: Number(f.gpsLat), lng: Number(f.gpsLng) };
   for (const s of [4, 3, 2, 1]) {
     try {
       const d = JSON.parse(f['step' + s + 'Json'] || '{}');
@@ -196,19 +225,75 @@ function getFarmerMapCoords(f) {
 // overwrite a step the person just completed — which was making a fully
 // finished farmer appear to jump back to "ধাপ ১" again.
 const STATUS_ORDER = ['নিবন্ধিত', 'অনুমোদিত', 'ধাপ ১ সম্পন্ন', 'ধাপ ২ সম্পন্ন', 'ধাপ ৩ সম্পন্ন', 'সম্পন্ন'];
-async function mergeFarmerFromServer(f) {
-  const existing = await idbGet('farmers', f.formNo);
-  if (existing) {
-    ['step1Json', 'step2Json', 'step3Json', 'step4Json', 'sowingDate',
-     'approvedSeedKg', 'approvedDate', 'approvedBy', 'totalExpense',
-     'profitLoss', 'yieldQty', 'marketPrice'].forEach(key => {
-      if (!f[key] && existing[key]) f[key] = existing[key];
+
+// স্ট্যাটাস সবসময় আসল তথ্য (ধাপ/অনুমোদন) থেকে হিসাব হয় — কখনো পিছিয়ে "অনুমোদিত"-এ ফিরবে না।
+function deriveStatus_(f) {
+  let best = STATUS_ORDER.indexOf(f.status);
+  if (f.approvedDate || f.approvedSeedKg) best = Math.max(best, 1);
+  [1, 2, 3, 4].forEach(n => { if (f['step' + n + 'Json']) best = Math.max(best, n + 1); });
+  if (best > 0) f.status = STATUS_ORDER[best];
+  return f;
+}
+function stepExpenseOf_(d) {
+  if (!d) return 0;
+  if (d.expense_total != null && d.expense_total !== '' && isFinite(Number(d.expense_total))) return Number(d.expense_total);
+  if (d.expense && typeof d.expense === 'object') return Object.values(d.expense).reduce((a, b) => a + (Number(b) || 0), 0);
+  return 0;
+}
+function parseStep_(f, n) { try { return f['step' + n + 'Json'] ? JSON.parse(f['step' + n + 'Json']) : null; } catch (e) { return null; } }
+// মোট খরচ = ৪ ধাপের খরচের যোগফল (একই ধাপ আবার সেভ করলে দ্বিগুণ হয় না)
+function totalExpenseOf_(f, exceptStep) {
+  return [1, 2, 3, 4].reduce((s, n) => n === exceptStep ? s : s + stepExpenseOf_(parseStep_(f, n)), 0);
+}
+function recomputeTotals_(f) {
+  f.totalExpense = totalExpenseOf_(f);
+  if (parseStep_(f, 4)) f.profitLoss = (Number(f.yieldQty) || 0) * (Number(f.marketPrice) || 0) - f.totalExpense;
+  return f;
+}
+
+// কিউতে কোন কৃষকের কোন ধাপ/অনুমোদন এখনো সার্ভারে যায়নি — মার্জের সময় সেগুলো লোকালটাই জিতবে।
+async function getPendingMap_() {
+  const items = await idbGetAll('queue');
+  const m = {};
+  items.forEach(it => {
+    const fn = it.payload && it.payload.formNo; if (!fn) return;
+    m[fn] = m[fn] || { steps: new Set(), approve: false, reg: false };
+    if (it.action === 'submitFollowUp') m[fn].steps.add(Number(it.payload.step));
+    if (it.action === 'approveFarmer') m[fn].approve = true;
+    if (it.action === 'submitFarmer') m[fn].reg = true;
+  });
+  return m;
+}
+
+function mergeFarmerRecords_(server, local, pending) {
+  const out = Object.assign({}, server);
+  if (local) {
+    // সার্ভারে যে ঘর খালি, সেখানে লোকালের মান রাখো (যেমন GPS, জমির বিঘা/কাঠা, ছবি)
+    Object.keys(local).forEach(k => {
+      const v = out[k];
+      if ((v === undefined || v === null || v === '') && local[k] !== undefined && local[k] !== null && local[k] !== '') out[k] = local[k];
     });
-    const existingRank = STATUS_ORDER.indexOf(existing.status);
-    const incomingRank = STATUS_ORDER.indexOf(f.status);
-    if (existingRank > incomingRank) f.status = existing.status;
+    if (pending) {
+      pending.steps.forEach(n => { if (local['step' + n + 'Json']) out['step' + n + 'Json'] = local['step' + n + 'Json']; });
+      if (pending.approve) ['approvedSeedKg', 'approvedDate', 'approvedBy'].forEach(k => { if (local[k]) out[k] = local[k]; });
+      if (pending.steps.has(4)) { out.yieldQty = local.yieldQty; out.marketPrice = local.marketPrice; }
+      if (pending.steps.has(1) && local.sowingDate) out.sowingDate = local.sowingDate;
+      if (pending.reg) out._pendingSync = true; else delete out._pendingSync;
+    } else { delete out._pendingSync; }
   }
-  await idbPut('farmers', f);
+  recomputeTotals_(out);
+  return deriveStatus_(out);
+}
+
+// আগের ভার্সনের মতো নয়: এখন পড়া+মার্জ+লেখা একটাই ট্রানজেকশনে, তাই স্টেল ডাটা নতুন ধাপ মুছতে পারে না।
+async function mergeFarmerFromServer(f, pendingMap) {
+  const pending = pendingMap ? pendingMap[f.formNo] : null;
+  await idbUpdate('farmers', f.formNo, existing => mergeFarmerRecords_(f, existing, pending));
+}
+
+async function mergeAllFromServer_(farmers) {
+  const pendingMap = await getPendingMap_();
+  for (const f of farmers) await mergeFarmerFromServer(f, pendingMap);
 }
 
 async function refreshFarmersCache() {
@@ -216,9 +301,75 @@ async function refreshFarmersCache() {
   try {
     const res = await apiGet('farmers', { requesterId: requesterId() });
     if (res.farmers) {
-      for (const f of res.farmers) await mergeFarmerFromServer(f);
+      await repairServerGaps_(res.farmers);   // সার্ভারে যা নেই কিন্তু এই ডিভাইসে আছে, কিউতে তুলে দাও
+      await mergeAllFromServer_(res.farmers);
     }
   } catch (e) { /* offline or server hiccup — local cache still used */ }
+}
+
+// 🔧 পুরনো ভার্সনে সার্ভারে সেভ না হওয়া তথ্য (জমি, বীজ, ধাপ, ছবি, কৃষক নিজেই) এই ডিভাইসের লোকাল কপি থেকে
+// সার্ভারে/শিটে আবার পাঠানো হয়। সার্ভার ইডেমপোটেন্ট, তাই ডুপ্লিকেট হয় না।
+let repairRan_ = false;
+async function repairServerGaps_(serverFarmers) {
+  if (repairRan_) return;
+  repairRan_ = true;
+  const serverMap = {};
+  serverFarmers.forEach(s => serverMap[String(s.formNo)] = s);
+  const queue = await idbGetAll('queue');
+  const queued = new Set(queue.map(q => q.action + '|' + (q.payload && q.payload.formNo) + '|' + (q.payload && q.payload.step || '')));
+  const locals = await idbGetAll('farmers');
+  const dataUrl = v => typeof v === 'string' && v.indexOf('data:') === 0;
+  let added = 0;
+  const q = async (action, payload) => {
+    const key = action + '|' + payload.formNo + '|' + (payload.step || '');
+    if (queued.has(key)) return;
+    queued.add(key); await queueAction(action, payload); added++;
+  };
+
+  for (const l of locals) {
+    const sv = serverMap[String(l.formNo)];
+    const mine = String(l.officerId) === String(requesterId());
+    // ১) কৃষক সার্ভারে একেবারেই নেই (আগে "সফল" দেখালেও সেভ হয়নি)
+    if (!sv) {
+      if (l._pendingSync && mine) {
+        await q('submitFarmer', {
+          formNo: l.formNo, nid: l.nid, farmerName: l.farmerName, fatherName: l.fatherName, mobile: l.mobile,
+          gender: l.gender, age: l.age, district: l.district, upazila: l.upazila, union: l.union, village: l.village,
+          landBigha: l.landBigha, landShotangsho: l.landShotangsho, landKatha: l.landKatha, landSize: l.landSize,
+          cropName: l.cropName, soilType: l.soilType, season: l.season, gpsLat: l.gpsLat, gpsLng: l.gpsLng,
+          regPhotoBase64: dataUrl(l.regPhotoUrl) ? l.regPhotoUrl : '', officerId: l.officerId, officerName: l.officerName,
+          officeName: l.officeName, regDate: l.regDate, deviceId: getDeviceId()
+        });
+      }
+      continue;
+    }
+    // ২) নিবন্ধনের তথ্য অসম্পূর্ণ (জমি/মাটি/মৌসুম সার্ভারে যায়নি)
+    if (mine && (!sv.landSize || !sv.soilType) && (l.landSize || l.soilType)) {
+      await q('submitFarmer', {
+        formNo: l.formNo, nid: l.nid, farmerName: l.farmerName, landBigha: l.landBigha, landShotangsho: l.landShotangsho,
+        landKatha: l.landKatha, landSize: l.landSize, soilType: l.soilType, season: l.season,
+        gpsLat: l.gpsLat, gpsLng: l.gpsLng,
+        regPhotoBase64: (!sv.regPhotoUrl && dataUrl(l.regPhotoUrl)) ? l.regPhotoUrl : '', deviceId: getDeviceId()
+      });
+    }
+    // ৩) অনুমোদন সার্ভারে নেই — শুধু অ্যাডমিন ডিভাইস থেকে
+    if (isAdmin() && l.approvedDate && !sv.approvedDate) {
+      await q('approveFarmer', { requesterId: requesterId(), formNo: l.formNo, seedKg: Number(l.approvedSeedKg) || 0,
+        approvedDate: l.approvedDate, approvedBy: l.approvedBy, deviceId: getDeviceId() });
+    }
+    // ৪) ধাপের তথ্য সার্ভারে নেই (ছবি + GPS সহ)
+    if (mine || isAdmin()) {
+      for (const n of [1, 2, 3, 4]) {
+        if (l['step' + n + 'Json'] && !sv['step' + n + 'Json']) {
+          const d = parseStep_(l, n) || {};
+          const photoB64 = dataUrl(d.photo) ? d.photo : undefined;
+          delete d.photo;
+          await q('submitFollowUp', { formNo: l.formNo, step: n, data: d, observationDate: d.date, photoBase64: photoB64, deviceId: getDeviceId() });
+        }
+      }
+    }
+  }
+  if (added) { await updateSyncBanner(); setTimeout(() => syncQueue(), 500); }
 }
 
 /* ================================================================
@@ -264,13 +415,31 @@ function updateNetPill() {
 
 window.addEventListener('online', () => { updateNetPill(); toast('ইন্টারনেট সংযোগ ফিরে এসেছে — সিঙ্ক করা হচ্ছে', 'success'); syncQueue(); });
 window.addEventListener('offline', () => { updateNetPill(); toast('আপনি এখন অফলাইনে আছেন', 'error'); });
-document.getElementById('netPill').addEventListener('click', () => { if (isOnline()) syncQueue(); });
-document.getElementById('syncNowBtn').addEventListener('click', syncQueue);
+document.getElementById('netPill').addEventListener('click', () => { if (isOnline()) syncQueue(true); });
+document.getElementById('syncNowBtn').addEventListener('click', () => syncQueue(true));
 
-async function queueAction(action, payload) {
-  const localId = await idbPut('queue', { action, payload, ts: Date.now() });
+async function queueAction(action, payload, lastError) {
+  const localId = await idbPut('queue', { action, payload, ts: Date.now(), lastError: lastError || '' });
   await updateSyncBanner();
   return localId;
+}
+
+// অনলাইনে থাকলে সরাসরি পাঠাও; সার্ভার ব্যর্থ বা {ok:false} দিলে কিউতে রাখো। (আগে ব্যর্থ উত্তরেও "সফল" দেখানো হতো
+// এবং কিছুই কিউতে যেত না — তাই কিছু কৃষক/লোকেশন শিটে যোগ হতো না।) ফেরত: 'sent' | 'queued'
+async function sendOrQueue(action, payload) {
+  if (isOnline()) {
+    try {
+      const res = await apiPost(action, payload);
+      if (apiOk_(res)) return 'sent';
+      await queueAction(action, payload, apiErr_(res));
+      return 'queued';
+    } catch (err) {
+      await queueAction(action, payload, err.message || String(err));
+      return 'queued';
+    }
+  }
+  await queueAction(action, payload);
+  return 'queued';
 }
 
 async function updateSyncBanner() {
@@ -279,7 +448,8 @@ async function updateSyncBanner() {
   const kpiPending = document.getElementById('kpiPending');
   if (items.length > 0) {
     banner.classList.remove('d-none');
-    document.getElementById('syncBannerText').textContent = items.length + 'টি ফর্ম সিঙ্কের অপেক্ষায়';
+    const err = (items.find(i => i.lastError) || {}).lastError;
+    document.getElementById('syncBannerText').textContent = items.length + 'টি ফর্ম সিঙ্কের অপেক্ষায়' + (err ? ' — কারণ: ' + err : '');
   } else {
     banner.classList.add('d-none');
   }
@@ -287,26 +457,44 @@ async function updateSyncBanner() {
 }
 
 let syncInProgress = false;
-async function syncQueue() {
-  if (syncInProgress || !isOnline()) return;
-  const items = await idbGetAll('queue');
-  if (items.length === 0) return;
+// প্রতিটি আইটেম আলাদা রিকোয়েস্টে পাঠানো হয় (আগে সব ছবিসহ এক রিকোয়েস্টে — একটা ভারী/ব্যর্থ আইটেম সবাইকে আটকে দিত)।
+async function syncQueue(manual) {
+  manual = manual === true;
+  if (!isOnline()) { if (manual) toast('ইন্টারনেট সংযোগ নেই', 'error'); return; }
+  if (syncInProgress) { if (manual) toast('সিঙ্ক চলছে, একটু অপেক্ষা করুন'); return; }
+  const items = (await idbGetAll('queue')).sort((a, b) => a.localId - b.localId);
+  if (items.length === 0) { if (manual) toast('সিঙ্ক করার মতো কিছু নেই', 'success'); return; }
   syncInProgress = true;
+  let ok = 0, failed = 0, lastErr = '';
+  const btn = document.getElementById('syncNowBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'সিঙ্ক হচ্ছে...'; }
   try {
-    const res = await apiPost('syncBatch', { items });
-    if (res.results) {
-      for (const r of res.results) {
-        if (r.ok) await idbDelete('queue', r.localId);
+    for (const item of items) {
+      try {
+        const res = await apiPost(item.action, item.payload);
+        if (apiOk_(res)) {
+          await idbDelete('queue', item.localId);
+          if (item.action === 'submitFarmer') {
+            await idbUpdate('farmers', item.payload.formNo, f => { if (f) { delete f._pendingSync; return f; } });
+          }
+          ok++;
+        } else {
+          failed++; lastErr = apiErr_(res);
+          await idbPut('queue', Object.assign({}, item, { lastError: lastErr, attempts: (item.attempts || 0) + 1 }));
+        }
+      } catch (err) {
+        failed++; lastErr = err.message || String(err);
+        await idbPut('queue', Object.assign({}, item, { lastError: lastErr, attempts: (item.attempts || 0) + 1 }));
+        if (!isOnline()) break;
       }
-      const failed = res.results.filter(r => !r.ok).length;
-      if (failed === 0) toast('সব ফর্ম সফলভাবে সিঙ্ক হয়েছে', 'success');
-      else toast(failed + 'টি ফর্ম সিঙ্ক করা যায়নি, পরে আবার চেষ্টা করা হবে', 'error');
     }
-  } catch (err) {
-    toast('সিঙ্ক ব্যর্থ হয়েছে — ইন্টারনেট সংযোগ পরীক্ষা করুন', 'error');
   } finally {
     syncInProgress = false;
+    if (btn) { btn.disabled = false; btn.textContent = 'এখনই সিঙ্ক করুন'; }
     await updateSyncBanner();
+    if (failed === 0) toast(ok + 'টি তথ্য সফলভাবে সিঙ্ক হয়েছে', 'success');
+    else toast(failed + 'টি সিঙ্ক হয়নি: ' + lastErr, 'error');
+    if (ok) { await refreshFarmersCache(); }
     renderDashboard();
   }
 }
@@ -377,8 +565,7 @@ document.getElementById('addLocationBtn').addEventListener('click', async () => 
   const union = prompt('ইউনিয়নের নাম লিখুন:') || '';
   const village = prompt('গ্রামের নাম লিখুন:') || '';
   const payload = { district, upazila, union, village };
-  if (isOnline()) { try { await apiPost('addLocation', payload); } catch (e) {} }
-  else { await queueAction('addLocation', payload); }
+  await sendOrQueue('addLocation', payload);
   const data = await getMasterData();
   data.locations.push(payload);
   await idbPut('masterData', { key: 'data', value: data });
@@ -475,6 +662,10 @@ function compressImage(dataUrl, maxDim, quality) {
 
 document.getElementById('farmerForm').addEventListener('submit', async (e) => {
   e.preventDefault();
+  if (!capturedGps && !confirm('GPS লোকেশন নেওয়া হয়নি — ম্যাপে এই কৃষকের পিন দেখাবে না।\nতবুও সংরক্ষণ করবেন?')) return;
+  const totalBighaForRecord = (Number(document.getElementById('f_landBigha').value) || 0)
+    + (Number(document.getElementById('f_landShotangsho').value) || 0) / 33
+    + (Number(document.getElementById('f_landKatha').value) || 0) / 20;
   const record = {
     formNo: document.getElementById('f_formNo').value,
     nid: document.getElementById('f_nid').value,
@@ -490,6 +681,7 @@ document.getElementById('farmerForm').addEventListener('submit', async (e) => {
     landBigha: document.getElementById('f_landBigha').value,
     landShotangsho: document.getElementById('f_landShotangsho').value,
     landKatha: document.getElementById('f_landKatha').value,
+    landSize: Math.round(totalBighaForRecord * 100) / 100,   // মোট বিঘা — আগে সার্ভারে যেতই না, তাই রিপোর্টে জমি ০ আসত
     cropName: document.getElementById('f_cropName').value,
     soilType: document.getElementById('f_soilType').value,
     season: document.getElementById('f_season').value,
@@ -516,17 +708,13 @@ document.getElementById('farmerForm').addEventListener('submit', async (e) => {
   delete localRecord.regPhotoBase64;
   await idbPut('farmers', localRecord);
 
-  if (isOnline()) {
-    try {
-      await apiPost('submitFarmer', record);
-      toast('কৃষক সফলভাবে নিবন্ধিত হয়েছে', 'success');
-    } catch (err) {
-      await queueAction('submitFarmer', record);
-      toast('সংরক্ষিত হয়েছে, ইন্টারনেট এলে সিঙ্ক হবে', 'success');
-    }
+  const wasOnline = isOnline();
+  const result = await sendOrQueue('submitFarmer', record);
+  if (result === 'sent') {
+    await idbUpdate('farmers', record.formNo, f => { if (f) { delete f._pendingSync; return f; } });
+    toast('কৃষক সফলভাবে নিবন্ধিত হয়েছে', 'success');
   } else {
-    await queueAction('submitFarmer', record);
-    toast('অফলাইনে সংরক্ষিত হয়েছে — ৩ ধাপে সিঙ্ক অপেক্ষমান', 'success');
+    toast(wasOnline ? 'সংরক্ষিত হয়েছে — সার্ভারে পাঠানো যায়নি, পরে সিঙ্ক হবে' : 'অফলাইনে সংরক্ষিত হয়েছে — ইন্টারনেট এলে সিঙ্ক হবে', 'success');
   }
   navigateTo('home');
 });
@@ -743,7 +931,7 @@ document.getElementById('p_price').addEventListener('input', updateProfitPreview
 function updateProfitPreview() {
   const yieldQty = Number(document.getElementById('p_yield').value) || 0;
   const price = Number(document.getElementById('p_price').value) || 0;
-  const priorExpense = Number(ACTIVE_FARMER.totalExpense) || 0;
+  const priorExpense = totalExpenseOf_(ACTIVE_FARMER, ACTIVE_STEP);
   const thisExpense = updateExpenseTotal();
   const pl = (yieldQty * price) - (priorExpense + thisExpense);
   const box = document.getElementById('profitBox');
@@ -794,38 +982,37 @@ document.getElementById('stepForm').addEventListener('submit', async (e) => {
     data.marketPrice = Number(document.getElementById('p_price').value) || 0;
   }
 
+  // সার্ভারে পাঠানোর ডাটায় ছবির base64 থাকবে না (আলাদা photoBase64 হিসেবে যাবে) — নইলে শিটের ঘরের সীমা পেরিয়ে সিঙ্ক ফেল করত।
+  const dataForServer = Object.assign({}, data);
+  delete dataForServer.photo;
+  const photoForServer = stepPhotoBase64 || (!data.photoUrl && data.photo && String(data.photo).indexOf('data:') === 0 ? data.photo : undefined);
+  const step = ACTIVE_STEP;
   const payload = {
-    formNo: ACTIVE_FARMER.formNo, step: ACTIVE_STEP, data,
+    formNo: ACTIVE_FARMER.formNo, step, data: dataForServer,
     expense: expenseTotal, observationDate: data.date,
-    photoBase64: stepPhotoBase64 || undefined,
+    photoBase64: photoForServer,
     deviceId: getDeviceId()
   };
 
-  // Update local cache immediately
-  ACTIVE_FARMER['step' + ACTIVE_STEP + 'Json'] = JSON.stringify(data);
-  ACTIVE_FARMER.lastFollowUpDate = data.date;
-  if (ACTIVE_STEP === 1 && sowingVal) ACTIVE_FARMER.sowingDate = sowingVal;
-  ACTIVE_FARMER.totalExpense = (Number(ACTIVE_FARMER.totalExpense) || 0) + expenseTotal;
-  if (ACTIVE_STEP === 4) {
-    ACTIVE_FARMER.yieldQty = data.yieldQty;
-    ACTIVE_FARMER.marketPrice = data.marketPrice;
-    ACTIVE_FARMER.profitLoss = (data.yieldQty * data.marketPrice) - ACTIVE_FARMER.totalExpense;
-    ACTIVE_FARMER.status = 'সম্পন্ন';
-  } else {
-    ACTIVE_FARMER.status = 'ধাপ ' + ACTIVE_STEP + ' সম্পন্ন';
-  }
-  await idbPut('farmers', ACTIVE_FARMER);
+  // লোকাল ক্যাশ আপডেট — সর্বশেষ সেভ করা রেকর্ড পড়ে তার উপর বসানো (এক ট্রানজেকশনে), পুরনো ACTIVE_FARMER কপি দিয়ে ওভাররাইট নয়।
+  const updated = await idbUpdate('farmers', ACTIVE_FARMER.formNo, fresh => {
+    const f = Object.assign({}, fresh || ACTIVE_FARMER);
+    f['step' + step + 'Json'] = JSON.stringify(data);
+    f.lastFollowUpDate = data.date;
+    if (step === 1 && sowingVal) f.sowingDate = sowingVal;
+    if (step === 4) { f.yieldQty = data.yieldQty; f.marketPrice = data.marketPrice; }
+    recomputeTotals_(f);
+    return deriveStatus_(f);
+  });
+  ACTIVE_FARMER = updated || ACTIVE_FARMER;
 
-  if (isOnline()) {
-    try { await apiPost('submitFollowUp', payload); toast('ধাপ ' + toBnNum(ACTIVE_STEP) + ' সংরক্ষণ হয়েছে', 'success'); }
-    catch (err) { await queueAction('submitFollowUp', payload); toast('সংরক্ষিত, সিঙ্ক অপেক্ষমান', 'success'); }
-  } else {
-    await queueAction('submitFollowUp', payload);
-    toast('অফলাইনে সংরক্ষিত হয়েছে', 'success');
-  }
+  const wasOnline = isOnline();
+  const result = await sendOrQueue('submitFollowUp', payload);
+  if (result === 'sent') toast('ধাপ ' + toBnNum(step) + ' সংরক্ষণ হয়েছে', 'success');
+  else toast(wasOnline ? 'সংরক্ষিত — সার্ভারে যায়নি, পরে সিঙ্ক হবে' : 'অফলাইনে সংরক্ষিত হয়েছে', 'success');
 
   renderStepTabs();
-  if (ACTIVE_STEP < 4) selectStep(ACTIVE_STEP + 1);
+  if (step < 4) selectStep(step + 1);
 });
 
 /* ---------- Print profile (2 A4 pages) ---------- */
@@ -962,7 +1149,7 @@ async function renderDashboard() {
     // requesterId lets the server return only what this role is scoped to see.
     apiGet('farmers', { requesterId: requesterId() }).then(res => {
       if (res.farmers) {
-        Promise.all(res.farmers.map(f => mergeFarmerFromServer(f))).then(() => {
+        mergeAllFromServer_(res.farmers).then(() => {
           // Re-render if the user is still looking at the home screen,
           // so newly-synced counts/charts show up without a manual nav.
           if (document.getElementById('screen-home').classList.contains('active-screen')) {
@@ -1010,7 +1197,7 @@ function renderOverdueList(elId, list) {
 async function renderReports() {
   await refreshFarmersCache(); // keep report numbers current when other officers have synced since boot
   const farmers = await idbGetAll('farmers');
-  renderMonthlySummary(farmers);
+  await renderMonthlySummary(farmers);
   const profitByOfficer = {};
   const countByCrop = {};
   farmers.forEach(f => {
@@ -1029,17 +1216,48 @@ async function renderReports() {
 
 function runNidHistorySearch() {
   const inputEl = document.getElementById('historyNidInput');
-  const nid = normalizeDigits(inputEl.value.trim());
+  const raw = inputEl.value.trim();
+  const q = normalizeDigits(raw).toLowerCase();
   const box = document.getElementById('historyResults');
-  if (!nid) { box.innerHTML = ''; return; }
+  if (!q) { box.innerHTML = ''; return; }
   idbGetAll('farmers').then(farmers => {
-    const matches = farmers.filter(f => normalizeDigits(String(f.nid || '')) === nid);
-    box.innerHTML = matches.length ? matches.map(f => `
-      <div class="section-card" style="box-shadow:none;border:1px solid var(--border);">
-        <strong>${escapeHtml(f.farmerName)}</strong> — ${escapeHtml(f.cropName)}<br>
-        <span class="small text-muted">ফর্ম: ${escapeHtml(f.formNo)} • ${escapeHtml(f.status)} • নিবন্ধন: ${escapeHtml(f.regDate ? f.regDate.slice(0,10) : '')}</span>
-      </div>`).join('') : '<p class="text-muted small">কোনো রেকর্ড পাওয়া যায়নি</p>';
+    const matches = farmers.filter(f => {
+      const nid = normalizeDigits(String(f.nid || ''));
+      if (nid === q) return true;
+      if (q.length < 3) return false;
+      return nid.includes(q) || String(f.formNo || '').toLowerCase().includes(q) ||
+        normalizeDigits(String(f.mobile || '')).includes(q) || String(f.farmerName || '').toLowerCase().includes(q);
+    }).slice(0, 20);
+    box.innerHTML = matches.length ? matches.map(farmerHistoryHtml_).join('') : '<p class="text-muted small">কোনো রেকর্ড পাওয়া যায়নি</p>';
   });
+}
+
+// একজন কৃষকের সব ধাপের তথ্য, ছবি ও লোকেশন — শিট থেকে ফিরিয়ে এনে এখানে দেখানো হয়।
+function mapLink_(lat, lng) { return 'https://www.google.com/maps?q=' + encodeURIComponent(lat + ',' + lng); }
+function farmerHistoryHtml_(f) {
+  const stepsHtml = [1, 2, 3, 4].map(n => {
+    const d = parseStep_(f, n);
+    if (!d || !d.date) return `<div class="small text-muted">ধাপ ${toBnNum(n)}: তথ্য নেই</div>`;
+    const photo = d.photoUrl || d.photo;
+    return `<div class="small" style="border-top:1px dashed var(--border);padding:6px 0;">
+      <strong>ধাপ ${toBnNum(n)} — ${esc_(formatBnDateTime(d.date))}</strong>${d.cropAge !== undefined && d.cropAge !== '' ? ' • বয়স ' + toBnNum(d.cropAge) + ' দিন' : ''}<br>
+      রোগ/পোকা: ${esc_(d.disease || '-')} • প্রতিকার: ${esc_(d.remedy || '-')} • অবস্থা: ${esc_(d.rating || '-')}%<br>
+      ${d.comment ? 'মন্তব্য: ' + esc_(d.comment) + '<br>' : ''}
+      খরচ: ৳ ${toBnNum(stepExpenseOf_(d))}
+      ${d.gps && d.gps.lat ? ` • <a href="${esc_(mapLink_(d.gps.lat, d.gps.lng))}" target="_blank" rel="noopener">📍 লোকেশন (${esc_(d.gps.lat)}, ${esc_(d.gps.lng)})</a>` : ' • লোকেশন নেই'}
+      ${photo ? `<br><a href="${esc_(photo)}" target="_blank" rel="noopener"><img src="${esc_(photo)}" style="max-width:140px;max-height:100px;border-radius:6px;margin-top:4px;" onerror="this.style.display='none'"></a>` : ''}
+    </div>`;
+  }).join('');
+  const regGps = f.gpsLat && f.gpsLng ? ` • <a href="${esc_(mapLink_(f.gpsLat, f.gpsLng))}" target="_blank" rel="noopener">📍 নিবন্ধনের লোকেশন</a>` : '';
+  return `
+    <div class="section-card" style="box-shadow:none;border:1px solid var(--border);">
+      <strong>${esc_(f.farmerName)}</strong> — ${esc_(f.cropName)}<br>
+      <span class="small text-muted">ফর্ম: ${esc_(f.formNo)} • ${esc_(f.status)} • নিবন্ধন: ${esc_(f.regDate ? formatBnDate(f.regDate) : '')} • ${esc_(f.officeName || '')}</span><br>
+      <span class="small">জমি: ${bigha2_(Number(f.landSize) || 0)} বিঘা • অনুমোদিত বীজ: ${toBnNum(f.approvedSeedKg || 0)} কেজি${regGps}</span>
+      <details class="mt-1"><summary class="small" style="cursor:pointer;">সব ধাপের বিস্তারিত দেখুন</summary>${stepsHtml}
+        <div class="small mt-1">মোট খরচ: ৳ ${toBnNum(Math.round(Number(f.totalExpense) || 0))} • উৎপাদন: ${toBnNum(f.yieldQty || 0)} কেজি • ${(Number(f.profitLoss) || 0) >= 0 ? 'লাভ' : 'ক্ষতি'}: ৳ ${toBnNum(Math.abs(Math.round(Number(f.profitLoss) || 0)))}</div>
+      </details>
+    </div>`;
 }
 // Converts Bengali digits (০-৯) to plain English digits so a search box
 // works the same whether the phone's keyboard types NID numbers in
@@ -1130,9 +1348,16 @@ async function renderMap() {
   // most recent follow-up step's GPS (see getFarmerMapCoords) — many
   // officers only capture location during a follow-up visit, not at
   // registration, so requiring registration GPS was hiding most pins.
+  const validCoord = c => c && isFinite(c.lat) && isFinite(c.lng) && Math.abs(c.lat) <= 90 && Math.abs(c.lng) <= 180 && (c.lat !== 0 || c.lng !== 0);
   const withGps = farmers
     .map(f => ({ f, coords: getFarmerMapCoords(f) }))
-    .filter(x => x.coords);
+    .filter(x => validCoord(x.coords));
+  const noGps = farmers.filter(f => !validCoord(getFarmerMapCoords(f)));
+  const noteEl = document.getElementById('mapNote');
+  if (noteEl) {
+    noteEl.textContent = 'ম্যাপে ' + toBnNum(withGps.length) + ' জন কৃষকের পিন আছে' +
+      (noGps.length ? ' • ' + toBnNum(noGps.length) + ' জনের GPS লোকেশন নেওয়া হয়নি: ' + noGps.slice(0, 5).map(f => f.farmerName).join(', ') + (noGps.length > 5 ? '…' : '') : '');
+  }
   const data = await getMasterData();
   const offices = data.offices || [];
 
@@ -1147,6 +1372,7 @@ async function renderMap() {
   } else {
     leafletMap.eachLayer(l => { if (l instanceof L.Marker) leafletMap.removeLayer(l); });
   }
+  setTimeout(() => leafletMap.invalidateSize(), 50); // লুকানো ট্যাবে তৈরি হলে ম্যাপের সাইজ ভুল হয়
 
   // Every branch office gets its own pin at its own GPS location.
   offices.forEach(o => {
@@ -1156,7 +1382,9 @@ async function renderMap() {
     }).addTo(leafletMap).bindPopup('<strong>' + escapeHtml(o.officeName) + '</strong><br>শাখা অফিস');
   });
 
+  const bounds = [];
   withGps.forEach(({ f, coords }) => {
+    bounds.push([coords.lat, coords.lng]);
     const office = offices.find(o => o.officeName === f.officeName);
     const officeLat = office ? Number(office.lat) : CONFIG.FALLBACK_OFFICE_LAT;
     const officeLng = office ? Number(office.lng) : CONFIG.FALLBACK_OFFICE_LNG;
@@ -1168,6 +1396,7 @@ async function renderMap() {
       `<strong>${escapeHtml(f.farmerName)}</strong><br>অফিসার: ${escapeHtml(f.officerName || '-')}<br>শাখা: ${escapeHtml(f.officeName || '-')}<br>ফসলের ধাপ: ${escapeHtml(f.status || '-')}<br>দূরত্ব: ${dist.toFixed(1)} কিমি`
     );
   });
+  if (bounds.length) leafletMap.fitBounds(bounds, { padding: [30, 30], maxZoom: 15 });
 }
 
 /* ================================================================
@@ -1232,25 +1461,18 @@ document.getElementById('pendingApprovalList').addEventListener('click', async (
   const seedKg = prompt('কত কেজি বীজ দেওয়া হচ্ছে?');
   if (seedKg === null) return;
   if (!seedKg || isNaN(Number(seedKg))) { toast('বীজের পরিমাণ সংখ্যায় লিখুন', 'error'); return; }
-  const payload = { requesterId: requesterId(), formNo, seedKg: Number(seedKg), deviceId: getDeviceId() };
-  if (isOnline()) {
-    try {
-      await apiPost('approveFarmer', payload);
-      toast('কৃষক অনুমোদিত হয়েছে', 'success');
-    } catch (err) {
-      await queueAction('approveFarmer', payload);
-      toast('সংরক্ষিত, ইন্টারনেট এলে সিঙ্ক হবে', 'success');
-    }
-  } else {
-    await queueAction('approveFarmer', payload);
-    toast('অফলাইনে সংরক্ষিত হয়েছে', 'success');
-  }
-  const farmer = await idbGet('farmers', formNo);
-  if (farmer) {
-    farmer.status = 'অনুমোদিত'; farmer.approvedSeedKg = Number(seedKg);
-    farmer.approvedDate = new Date().toISOString(); farmer.approvedBy = CURRENT_USER.name;
-    await idbPut('farmers', farmer);
-  }
+  const approvedDate = new Date().toISOString();
+  const payload = { requesterId: requesterId(), formNo, seedKg: Number(seedKg), approvedDate, approvedBy: CURRENT_USER.name, deviceId: getDeviceId() };
+  // আগে লোকালে সেভ, তারপর সার্ভারে — সার্ভার ব্যর্থ হলে কিউতে থাকবে
+  await idbUpdate('farmers', formNo, f => {
+    if (!f) return;
+    f.status = 'অনুমোদিত'; f.approvedSeedKg = Number(seedKg); f.approvedDate = approvedDate; f.approvedBy = CURRENT_USER.name;
+    return deriveStatus_(f);
+  });
+  const wasOnline = isOnline();
+  const result = await sendOrQueue('approveFarmer', payload);
+  if (result === 'sent') toast('কৃষক অনুমোদিত হয়েছে', 'success');
+  else toast(wasOnline ? 'সংরক্ষিত — সার্ভারে যায়নি, পরে সিঙ্ক হবে' : 'অফলাইনে সংরক্ষিত হয়েছে', 'success');
   renderAdmin();
 });
 
@@ -1266,44 +1488,96 @@ function renderApprovedFarmers(farmers) {
 }
 function esc_(v) { return escapeHtml(String(v == null ? '' : v)); }
 
-// Month-by-month, office-by-office: applications, approved count, seed kg.
-function renderMonthlySummary(farmers) {
-  const key = (dateStr, office) => (dateStr ? dateStr.slice(0, 7) : 'অজানা') + '|' + (office || 'অজানা');
+// স্থানীয় সময়ের মাস (YYYY-MM) — UTC কাটলে মাসের শেষ/শুরুর রাতের এন্ট্রি ভুল মাসে যেত।
+function monthKey_(v) {
+  if (!v) return '';
+  const d = new Date(v);
+  if (isNaN(d)) return String(v).slice(0, 7);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+}
+const bigha2_ = n => toBnNum((Math.round(n * 100) / 100).toFixed(2));
+
+// শাখা অফিস অনুযায়ী সারাংশ — মাস নির্বাচনের ড্রপডাউনসহ।
+// কলাম: নতুন আবেদন | আবেদনের জমি (বিঘা) | বীজ পাওয়া কৃষক | অনুমোদিত জমি (বিঘা) | মোট বীজ (কেজি)
+let monthlyFarmersCache_ = [];
+async function renderMonthlySummary(farmers) {
+  monthlyFarmersCache_ = farmers;
+  const sel = document.getElementById('reportMonthSelect');
+  const data = await getMasterData();
+  const allOffices = (data.offices || []).map(o => o.officeName).filter(Boolean);
+
+  // ড্রপডাউনের মাস: ডাটার প্রথম মাস থেকে এই মাস পর্যন্ত সব মাস (জুন, জুলাই, আগস্ট, সেপ্টেম্বর ২০২৬ ...)
+  const months = new Set();
+  farmers.forEach(f => { if (f.regDate) months.add(monthKey_(f.regDate)); if (f.approvedDate) months.add(monthKey_(f.approvedDate)); });
+  months.delete('');
+  const nowKey = monthKey_(new Date());
+  months.add(nowKey);
+  const sortedAsc = [...months].sort();
+  let [y, m] = sortedAsc[0].split('-').map(Number);
+  const [ey, em] = nowKey.split('-').map(Number);
+  while (y < ey || (y === ey && m <= em)) { months.add(y + '-' + String(m).padStart(2, '0')); m++; if (m > 12) { m = 1; y++; } }
+  const monthList = [...months].sort().reverse();
+
+  const prev = sel.value;
+  sel.innerHTML = '<option value="all">সব মাস</option>' + monthList.map(k => `<option value="${k}">${esc_(bnMonthLabel(k))}</option>`).join('');
+  sel.value = (prev && [...sel.options].some(o => o.value === prev)) ? prev : 'all';
+  sel.onchange = () => drawMonthlyTable_(allOffices);
+  drawMonthlyTable_(allOffices);
+}
+
+function drawMonthlyTable_(allOffices) {
+  const farmers = monthlyFarmersCache_;
+  const selected = document.getElementById('reportMonthSelect').value;
   const rows = {};
-  const ensure = (k, month, office) => {
-    if (!rows[k]) rows[k] = { month, office, applications: 0, approved: 0, seedKg: 0 };
+  const ensure = (month, office) => {
+    const k = month + '|' + office;
+    if (!rows[k]) rows[k] = { month, office, applications: 0, appLand: 0, approved: 0, apprLand: 0, seedKg: 0 };
     return rows[k];
   };
+  const officeOf = f => f.officeName || 'অজানা';
   farmers.forEach(f => {
+    const land = Number(f.landSize) || 0;
     if (f.regDate) {
-      const month = f.regDate.slice(0, 7);
-      const k = key(f.regDate, f.officeName);
-      ensure(k, month, f.officeName).applications += 1;
+      const month = monthKey_(f.regDate);
+      if (selected === 'all' || month === selected) { const r = ensure(month, officeOf(f)); r.applications += 1; r.appLand += land; }
     }
     if (f.approvedDate) {
-      const month = f.approvedDate.slice(0, 7);
-      const k = key(f.approvedDate, f.officeName);
-      const row = ensure(k, month, f.officeName);
-      row.approved += 1;
-      row.seedKg += Number(f.approvedSeedKg) || 0;
+      const month = monthKey_(f.approvedDate);
+      if (selected === 'all' || month === selected) {
+        const r = ensure(month, officeOf(f));
+        r.approved += 1; r.apprLand += land; r.seedKg += Number(f.approvedSeedKg) || 0;
+      }
     }
   });
-  const sorted = Object.values(rows).sort((a, b) => b.month.localeCompare(a.month) || a.office.localeCompare(b.office));
+  // নির্দিষ্ট মাস বাছলে প্রতিটি অফিসই দেখাও (কাজ না থাকলেও ০ সহ)
+  if (selected !== 'all') allOffices.forEach(o => ensure(selected, o));
+
+  const list = Object.values(rows).sort((a, b) => b.month.localeCompare(a.month) || a.office.localeCompare(b.office));
   const table = document.getElementById('monthlySummaryTable');
-  if (!sorted.length) {
-    table.innerHTML = '<tr><td class="text-muted small">কোনো তথ্য নেই</td></tr>';
-    return;
-  }
+  if (!list.length) { table.innerHTML = '<tr><td class="text-muted small">কোনো তথ্য নেই</td></tr>'; return; }
+
+  const tot = list.reduce((t, r) => ({
+    applications: t.applications + r.applications, appLand: t.appLand + r.appLand,
+    approved: t.approved + r.approved, apprLand: t.apprLand + r.apprLand, seedKg: t.seedKg + r.seedKg
+  }), { applications: 0, appLand: 0, approved: 0, apprLand: 0, seedKg: 0 });
+
   table.innerHTML = `
-    <tr><th>মাস</th><th>শাখা অফিস</th><th>নতুন আবেদন</th><th>বীজ পাওয়া কৃষক</th><th>মোট বীজ (কেজি)</th></tr>
-    ${sorted.map(r => `<tr>
+    <tr><th>মাস</th><th>শাখা অফিস</th><th>নতুন আবেদন</th><th>আবেদনের জমি (বিঘা)</th><th>বীজ পাওয়া কৃষক</th><th>অনুমোদিত জমি (বিঘা)</th><th>মোট বীজ (কেজি)</th></tr>
+    ${list.map(r => `<tr>
       <td>${esc_(bnMonthLabel(r.month))}</td>
       <td>${esc_(r.office)}</td>
       <td>${toBnNum(r.applications)}</td>
+      <td>${bigha2_(r.appLand)}</td>
       <td>${toBnNum(r.approved)}</td>
-      <td>${toBnNum(r.seedKg)}</td>
+      <td>${bigha2_(r.apprLand)}</td>
+      <td>${toBnNum(Math.round(r.seedKg * 100) / 100)}</td>
     </tr>`).join('')}
-  `;
+    <tr style="font-weight:700;background:var(--green-100)">
+      <td colspan="2">মোট${selected === 'all' ? '' : ' — ' + esc_(bnMonthLabel(selected))}</td>
+      <td>${toBnNum(tot.applications)}</td><td>${bigha2_(tot.appLand)}</td>
+      <td>${toBnNum(tot.approved)}</td><td>${bigha2_(tot.apprLand)}</td>
+      <td>${toBnNum(Math.round(tot.seedKg * 100) / 100)}</td>
+    </tr>`;
 }
 function bnMonthLabel(ym) {
   if (!ym || ym === 'অজানা') return ym;

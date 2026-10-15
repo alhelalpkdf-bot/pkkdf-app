@@ -304,6 +304,7 @@
     <section id="screen-reports" class="screen">
       <div class="section-card">
         <h2 class="section-heading">মাসভিত্তিক সারাংশ (শাখা অফিস অনুযায়ী)</h2>
+        <select class="form-select mb-2" id="reportMonthSelect" aria-label="মাস নির্বাচন করুন"><option value="all">সব মাস</option></select>
         <div class="table-scroll">
           <table class="mis-table" id="monthlySummaryTable"></table>
         </div>
@@ -321,14 +322,15 @@
         <ul class="overdue-list" id="overdueListReports"></ul>
       </div>
       <div class="section-card">
-        <h2 class="section-heading">NID দিয়ে কৃষকের ইতিহাস খুঁজুন</h2>
-        <input class="form-control mb-2" id="historyNidInput" placeholder="NID নম্বর দিন" inputmode="numeric">
+        <h2 class="section-heading">কৃষকের পূর্ণ ইতিহাস খুঁজুন (ধাপ, ছবি, লোকেশনসহ)</h2>
+        <input class="form-control mb-2" id="historyNidInput" placeholder="NID / নাম / ফর্ম নম্বর / মোবাইল">
         <div id="historyResults"></div>
       </div>
     </section>
 
     <!-- ---------------- MODULE 4: GIS MAP ---------------- -->
     <section id="screen-map" class="screen">
+      <div id="mapNote" class="small text-muted px-2 py-1"></div>
       <div id="gisMap"></div>
     </section>
 

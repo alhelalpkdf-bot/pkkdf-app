@@ -9,7 +9,7 @@
      via IndexedDB, not by this service worker.
    ================================================================ */
 
-const CACHE_NAME = 'pkkdf-shell-v7';
+const CACHE_NAME = 'pkkdf-shell-v8';
 const APP_SHELL = [
   './',
   './index.html',
@@ -53,6 +53,18 @@ self.addEventListener('fetch', (event) => {
   // data is fresh; app.js already handles offline queuing separately.
   if (url.hostname.includes('script.google.com')) {
     return; // let the browser handle it natively (fetch in app.js awaits/catches)
+  }
+
+  // অ্যাপের নিজের ফাইল (html/js/css) আগে নেটওয়ার্ক থেকে — নইলে আপডেটের পরও পুরনো app.js চলতে থাকে
+  // (সিঙ্ক বাগ ঠিক করার পরও ফোনে ঠিক না হওয়ার একটা কারণ এটিই)। অফলাইনে ক্যাশ থেকে চলবে।
+  if (req.method === 'GET' && url.origin === self.location.origin && /\.(js|css|html)$|\/$/.test(url.pathname)) {
+    event.respondWith(
+      fetch(req).then((res) => {
+        if (res.ok) { const c = res.clone(); caches.open(CACHE_NAME).then((cache) => cache.put(req, c)); }
+        return res;
+      }).catch(() => caches.match(req).then((c) => c || (req.mode === 'navigate' ? caches.match('./index.html') : undefined)))
+    );
+    return;
   }
 
   event.respondWith(
